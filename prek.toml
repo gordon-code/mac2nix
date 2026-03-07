@@ -1,0 +1,103 @@
+default_stages = ["pre-commit"]
+fail_fast = true
+
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
+hooks = [
+  {
+    id = "trailing-whitespace",
+    priority = 0
+  },
+  {
+    id = "end-of-file-fixer",
+    priority = 0
+  },
+  {
+    id = "check-toml",
+    priority = 0
+  },
+  {
+    id = "check-yaml",
+    args = ["--allow-multiple-documents"],
+    priority = 0
+  },
+  {
+    id = "check-json",
+    priority = 0
+  },
+  {
+    id = "mixed-line-ending",
+    args = ["--fix=lf"],
+    priority = 0
+  },
+  {
+    id = "check-merge-conflict",
+    stages = [
+      "pre-commit",
+      "pre-push"
+    ],
+    priority = 0
+  },
+  {
+    id = "no-commit-to-branch",
+    name = "Block commits to main/master",
+    stages = [
+      "pre-commit",
+      "pre-push"
+    ],
+    priority = 0
+  },
+  {
+    id = "check-added-large-files",
+    args = ["--maxkb=100"],
+    priority = 0
+  }
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "py-lint",
+    name = "Python lint (ruff check)",
+    entry = "uv run ruff check src/ tests/",
+    language = "system",
+    files = '\\.py$',
+    pass_filenames = false,
+    priority = 0
+  },
+  {
+    id = "py-format-check",
+    name = "Python format check (ruff format)",
+    entry = "uv run ruff format --check src/ tests/",
+    language = "system",
+    files = '\\.py$',
+    pass_filenames = false,
+    priority = 0
+  }
+]
+
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "v1.7.11"
+hooks = [
+  {
+    id = "actionlint",
+    name = "Lint GitHub Actions workflows",
+    priority = 0
+  }
+]
+
+[[repos]]
+repo = "https://github.com/trufflesecurity/trufflehog"
+rev = "v3.93.4"
+hooks = [
+  {
+    id = "trufflehog",
+    entry = "trufflehog filesystem --no-verification --no-update --force-skip-archives --force-skip-binaries --fail",
+    exclude = 'uv\.lock$',
+    pass_filenames = true,
+    priority = 0
+  }
+]

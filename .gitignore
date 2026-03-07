@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# uv
+.uv/
+
+# Cache
+.cache/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Project
+hack/
+data/
+
+# Environment
+.env
+.secrets/
+
+# pytest
+.pytest_cache/
