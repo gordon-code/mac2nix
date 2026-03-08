@@ -6,7 +6,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from mac2nix.scanners._utils import _convert_datetimes, read_plist_safe, run_command
+from mac2nix.scanners._utils import (
+    _convert_datetimes,
+    hash_file,
+    read_launchd_plists,
+    read_plist_safe,
+    run_command,
+)
 
 
 class TestRunCommand:
@@ -134,3 +140,96 @@ class TestConvertDatetimes:
         assert _convert_datetimes("hello") == "hello"
         assert _convert_datetimes(42) == 42
         assert _convert_datetimes(None) is None
+
+
+class TestHashFile:
+    def test_hash_small_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "test.txt"
+        f.write_text("hello world")
+        result = hash_file(f)
+        assert result is not None
+        assert len(result) == 16
+
+    def test_hash_deterministic(self, tmp_path: Path) -> None:
+        f = tmp_path / "test.txt"
+        f.write_text("deterministic content")
+        assert hash_file(f) == hash_file(f)
+
+    def test_hash_different_content(self, tmp_path: Path) -> None:
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("content a")
+        f2.write_text("content b")
+        assert hash_file(f1) != hash_file(f2)
+
+    def test_hash_missing_file(self, tmp_path: Path) -> None:
+        assert hash_file(tmp_path / "missing.txt") is None
+
+    def test_hash_permission_denied(self, tmp_path: Path) -> None:
+        f = tmp_path / "locked.txt"
+        f.write_text("data")
+        with patch.object(Path, "open", side_effect=PermissionError("denied")):
+            assert hash_file(f) is None
+
+    def test_hash_max_bytes(self, tmp_path: Path) -> None:
+        f = tmp_path / "big.txt"
+        f.write_bytes(b"A" * 200)
+        hash_full = hash_file(f, max_bytes=200)
+        hash_partial = hash_file(f, max_bytes=100)
+        assert hash_full is not None
+        assert hash_partial is not None
+        assert hash_full != hash_partial
+
+
+class TestReadLaunchdPlists:
+    def test_reads_plists_from_dirs(self, tmp_path: Path) -> None:
+        agent_dir = tmp_path / "LaunchAgents"
+        agent_dir.mkdir()
+        plist_data = {"Label": "com.test.agent", "RunAtLoad": True}
+        (agent_dir / "com.test.agent.plist").write_bytes(plistlib.dumps(plist_data))
+
+        with patch("mac2nix.scanners._utils.LAUNCHD_DIRS", [(agent_dir, "user")]):
+            results = read_launchd_plists()
+
+        assert len(results) == 1
+        path, source_key, data = results[0]
+        assert path.name == "com.test.agent.plist"
+        assert source_key == "user"
+        assert data["Label"] == "com.test.agent"
+
+    def test_skips_nonexistent_dirs(self) -> None:
+        with patch("mac2nix.scanners._utils.LAUNCHD_DIRS", [(Path("/nonexistent"), "user")]):
+            results = read_launchd_plists()
+
+        assert results == []
+
+    def test_skips_invalid_plists(self, tmp_path: Path) -> None:
+        agent_dir = tmp_path / "LaunchAgents"
+        agent_dir.mkdir()
+        (agent_dir / "bad.plist").write_text("not a plist")
+        plist_data = {"Label": "com.test.good"}
+        (agent_dir / "good.plist").write_bytes(plistlib.dumps(plist_data))
+
+        with patch("mac2nix.scanners._utils.LAUNCHD_DIRS", [(agent_dir, "user")]):
+            results = read_launchd_plists()
+
+        assert len(results) == 1
+        assert results[0][2]["Label"] == "com.test.good"
+
+    def test_multiple_dirs(self, tmp_path: Path) -> None:
+        user_dir = tmp_path / "UserAgents"
+        system_dir = tmp_path / "SystemAgents"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        (user_dir / "user.plist").write_bytes(plistlib.dumps({"Label": "user.agent"}))
+        (system_dir / "sys.plist").write_bytes(plistlib.dumps({"Label": "sys.agent"}))
+
+        with patch(
+            "mac2nix.scanners._utils.LAUNCHD_DIRS",
+            [(user_dir, "user"), (system_dir, "system")],
+        ):
+            results = read_launchd_plists()
+
+        assert len(results) == 2
+        source_keys = {r[1] for r in results}
+        assert source_keys == {"user", "system"}

@@ -12,7 +12,7 @@ from mac2nix.scanners.base import BaseScannerPlugin, register
 logger = logging.getLogger(__name__)
 
 
-@register
+@register("system")
 class SystemScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:

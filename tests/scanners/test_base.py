@@ -51,7 +51,7 @@ class TestBaseScannerPlugin:
 
 class TestRegisterDecorator:
     def test_registration(self) -> None:
-        registered = register(MinimalScanner)
+        registered = register("minimal")(MinimalScanner)
         assert registered is MinimalScanner
         assert "minimal" in SCANNER_REGISTRY
         assert SCANNER_REGISTRY["minimal"] is MinimalScanner
@@ -65,8 +65,8 @@ class TestRegisterDecorator:
             def scan(self) -> DummyResult:
                 return DummyResult()
 
-        register(MinimalScanner)
-        register(AnotherScanner)
+        register("minimal")(MinimalScanner)
+        register("another")(AnotherScanner)
         assert len(SCANNER_REGISTRY) == 2
         assert "minimal" in SCANNER_REGISTRY
         assert "another" in SCANNER_REGISTRY
@@ -74,7 +74,7 @@ class TestRegisterDecorator:
 
 class TestGetScanner:
     def test_get_scanner_found(self) -> None:
-        register(MinimalScanner)
+        register("minimal")(MinimalScanner)
         result = get_scanner("minimal")
         assert result is MinimalScanner
 
@@ -85,13 +85,13 @@ class TestGetScanner:
 
 class TestGetAllScanners:
     def test_get_all_scanners(self) -> None:
-        register(MinimalScanner)
+        register("minimal")(MinimalScanner)
         all_scanners = get_all_scanners()
         assert "minimal" in all_scanners
         assert all_scanners["minimal"] is MinimalScanner
 
     def test_get_all_scanners_returns_copy(self) -> None:
-        register(MinimalScanner)
+        register("minimal")(MinimalScanner)
         copy = get_all_scanners()
         copy["injected"] = MinimalScanner  # type: ignore[assignment]
         assert "injected" not in SCANNER_REGISTRY

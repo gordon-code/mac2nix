@@ -26,7 +26,7 @@ _EXTENSION_MAP: dict[str, ConfigFileType] = {
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 
-@register
+@register("app_config")
 class AppConfigScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:

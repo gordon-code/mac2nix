@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 from pydantic import BaseModel
 
@@ -31,14 +32,17 @@ class BaseScannerPlugin(ABC):
         return True
 
 
-def register(cls: type[BaseScannerPlugin]) -> type[BaseScannerPlugin]:
-    """Class decorator to register a scanner plugin.
+def register(name: str) -> Callable[[type[BaseScannerPlugin]], type[BaseScannerPlugin]]:
+    """Class decorator factory to register a scanner plugin by name.
 
-    Instantiates the class to read its name property for registry key.
-    Constructors must be side-effect free (no subprocess calls).
+    Usage: @register("scanner_name")
     """
-    SCANNER_REGISTRY[cls().name] = cls
-    return cls
+
+    def decorator(cls: type[BaseScannerPlugin]) -> type[BaseScannerPlugin]:
+        SCANNER_REGISTRY[name] = cls
+        return cls
+
+    return decorator
 
 
 def get_scanner(name: str) -> type[BaseScannerPlugin]:

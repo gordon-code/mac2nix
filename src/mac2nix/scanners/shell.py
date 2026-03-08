@@ -29,7 +29,9 @@ _EXPORT_PATTERN = re.compile(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.+)$")
 _FISH_SET_EXPORT = re.compile(r"^set\s+-gx\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$")
 _FISH_ADD_PATH = re.compile(r"^fish_add_path\s+(.+)$")
 _PATH_EXPORT = re.compile(r"^export\s+PATH=(.+)$")
-_FUNCTION_PATTERN = re.compile(r"^\s*(?:function\s+)?(\w+)\s*\(\)\s*\{?")
+# Line-by-line parsing — may false-positive inside heredocs, which is acceptable
+# for rc-file scanning since heredocs in rc files are rare.
+_FUNCTION_PATTERN = re.compile(r"^(?:function\s+)?(\w+)\s*\(\)\s*\{?")
 _FISH_FUNCTION_PATTERN = re.compile(r"^function\s+(\S+)")
 
 
@@ -43,7 +45,7 @@ class _ParsedShellData:
     functions: list[str] = field(default_factory=list)
 
 
-@register
+@register("shell")
 class ShellScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:

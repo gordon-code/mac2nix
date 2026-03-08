@@ -125,6 +125,34 @@ class TestAudioScanner:
         assert result.input_devices == []
         assert result.output_devices == []
 
+    def test_unclassified_device_defaults_to_output(self, cmd_result) -> None:
+        audio_json = {
+            "SPAudioDataType": [
+                {
+                    "_name": "Unknown Device",
+                    "_items": [
+                        {
+                            "_name": "Mystery Device",
+                            "coreaudio_device_uid": "mystery",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPAudioDataType" in cmd:
+                return cmd_result(json.dumps(audio_json))
+            return None
+
+        with patch("mac2nix.scanners.audio.run_command", side_effect=side_effect):
+            result = AudioScanner().scan()
+
+        assert isinstance(result, AudioConfig)
+        assert len(result.output_devices) == 1
+        assert result.output_devices[0].name == "Mystery Device"
+        assert result.input_devices == []
+
     def test_returns_audio_config(self) -> None:
         with patch("mac2nix.scanners.audio.run_command", return_value=None):
             result = AudioScanner().scan()

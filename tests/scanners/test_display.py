@@ -110,6 +110,31 @@ class TestDisplayScanner:
         assert isinstance(result, DisplayConfig)
         assert result.monitors == []
 
+    def test_resolution_fallback_key(self, cmd_result) -> None:
+        display_json = {
+            "SPDisplaysDataType": [
+                {
+                    "_name": "GPU",
+                    "spdisplays_ndrvs": [
+                        {
+                            "_name": "External Monitor",
+                            "spdisplays_resolution": "1920 x 1080",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch(
+            "mac2nix.scanners.display.run_command",
+            return_value=cmd_result(json.dumps(display_json)),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert len(result.monitors) == 1
+        assert result.monitors[0].resolution == "1920 x 1080"
+
     def test_returns_display_config(self) -> None:
         with patch("mac2nix.scanners.display.run_command", return_value=None):
             result = DisplayScanner().scan()

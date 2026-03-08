@@ -20,7 +20,7 @@ def _extract_quoted(line: str) -> str:
     return line.split('"')[1] if '"' in line else ""
 
 
-@register
+@register("homebrew")
 class HomebrewScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:

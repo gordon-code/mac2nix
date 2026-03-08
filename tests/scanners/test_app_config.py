@@ -119,6 +119,37 @@ class TestAppConfigScanner:
         assert result.entries[0].scannable is False
         assert result.entries[0].content_hash is None
 
+    def test_group_containers(self, tmp_path: Path) -> None:
+        group_containers = tmp_path / "Library" / "Group Containers"
+        group_containers.mkdir(parents=True)
+        app_dir = group_containers / "group.com.example.app"
+        app_dir.mkdir()
+        (app_dir / "settings.json").write_text('{"key": "value"}')
+
+        with patch("mac2nix.scanners.app_config.Path.home", return_value=tmp_path):
+            result = AppConfigScanner().scan()
+
+        assert isinstance(result, AppConfigResult)
+        assert len(result.entries) == 1
+        assert result.entries[0].app_name == "group.com.example.app"
+        assert result.entries[0].file_type == ConfigFileType.JSON
+
+    def test_large_file_skipped(self, tmp_path: Path) -> None:
+        app_support = _setup_app_support(tmp_path)
+        app_dir = app_support / "BigApp"
+        app_dir.mkdir()
+        large_file = app_dir / "huge.json"
+        large_file.write_text("x")
+
+        with (
+            patch("mac2nix.scanners.app_config.Path.home", return_value=tmp_path),
+            patch("mac2nix.scanners.app_config._MAX_FILE_SIZE", 0),
+        ):
+            result = AppConfigScanner().scan()
+
+        assert isinstance(result, AppConfigResult)
+        assert result.entries == []
+
     def test_returns_app_config_result(self, tmp_path: Path) -> None:
         with patch("mac2nix.scanners.app_config.Path.home", return_value=tmp_path):
             result = AppConfigScanner().scan()

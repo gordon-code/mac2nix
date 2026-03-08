@@ -13,7 +13,7 @@ from mac2nix.scanners.base import BaseScannerPlugin, register
 logger = logging.getLogger(__name__)
 
 
-@register
+@register("network")
 class NetworkScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:
@@ -148,6 +148,8 @@ class NetworkScanner(BaseScannerPlugin):
                 wifi_device = iface.device
                 break
 
+        # Fallback: en0 is typically Wi-Fi on laptops but may be Ethernet on
+        # Mac Pro/Mac Studio — the query will just return empty in that case.
         if wifi_device is None:
             wifi_device = "en0"
 

@@ -18,7 +18,7 @@ _APP_DIRS = [
 ]
 
 
-@register
+@register("applications")
 class ApplicationsScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:

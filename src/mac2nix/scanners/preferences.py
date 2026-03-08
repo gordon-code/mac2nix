@@ -19,7 +19,7 @@ _PREF_GLOBS: list[tuple[Path, str]] = [
 ]
 
 
-@register
+@register("preferences")
 class PreferencesScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:

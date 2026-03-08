@@ -18,7 +18,7 @@ _FONT_DIRS: list[tuple[Path, FontSource]] = [
 _FONT_EXTENSIONS = frozenset({".ttf", ".otf", ".ttc", ".woff", ".woff2"})
 
 
-@register
+@register("fonts")
 class FontsScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:

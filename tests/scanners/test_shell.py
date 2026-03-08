@@ -129,6 +129,58 @@ class TestShellScanner:
         assert isinstance(result, ShellConfig)
         assert result.shell_type == "zsh"
 
+    def test_sensitive_posix_vars_filtered(self, tmp_path: Path) -> None:
+        (tmp_path / ".zshrc").write_text(
+            "export API_KEY=secret123\n"
+            "export GH_TOKEN=ghp_abc\n"
+            "export DB_PASSWORD=hunter2\n"
+            "export EDITOR=vim\n"
+        )
+
+        with (
+            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
+        ):
+            result = ShellScanner().scan()
+
+        assert isinstance(result, ShellConfig)
+        assert "API_KEY" not in result.env_vars
+        assert "GH_TOKEN" not in result.env_vars
+        assert "DB_PASSWORD" not in result.env_vars
+        assert result.env_vars.get("EDITOR") == "vim"
+
+    def test_sensitive_fish_vars_filtered(self, tmp_path: Path) -> None:
+        config_fish = tmp_path / ".config" / "fish"
+        config_fish.mkdir(parents=True)
+        (config_fish / "config.fish").write_text(
+            "set -gx API_KEY secret123\n"
+            "set -gx AWS_SECRET_ACCESS_KEY abc\n"
+            "set -gx EDITOR nvim\n"
+        )
+
+        with (
+            patch.dict("os.environ", {"SHELL": "/usr/local/bin/fish"}),
+            patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
+        ):
+            result = ShellScanner().scan()
+
+        assert isinstance(result, ShellConfig)
+        assert "API_KEY" not in result.env_vars
+        assert "AWS_SECRET_ACCESS_KEY" not in result.env_vars
+        assert result.env_vars.get("EDITOR") == "nvim"
+
+    def test_posix_function_detection(self, tmp_path: Path) -> None:
+        (tmp_path / ".zshrc").write_text("my_func() {\n  echo hello\n}\n")
+
+        with (
+            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
+        ):
+            result = ShellScanner().scan()
+
+        assert isinstance(result, ShellConfig)
+        assert "my_func" in result.functions
+
     def test_returns_shell_config(self, tmp_path: Path) -> None:
         with (
             patch.dict("os.environ", {"SHELL": "/bin/zsh"}),

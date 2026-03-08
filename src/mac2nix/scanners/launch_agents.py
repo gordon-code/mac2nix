@@ -20,7 +20,7 @@ _SOURCE_MAP: dict[str, LaunchAgentSource] = {
 }
 
 
-@register
+@register("launch_agents")
 class LaunchAgentsScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:
@@ -64,7 +64,12 @@ class LaunchAgentsScanner(BaseScannerPlugin):
         )
 
     def _get_login_items(self) -> list[LaunchAgentEntry]:
-        """Parse login items from sfltool dumpbtm output."""
+        """Parse login items from sfltool dumpbtm output.
+
+        Note: sfltool dumpbtm outputs JSON on some macOS versions but a custom
+        text format on others. When JSON parsing fails, we gracefully return an
+        empty list — login items will not be captured on those versions.
+        """
         result = run_command(["sfltool", "dumpbtm"])
         if result is None or result.returncode != 0:
             return []

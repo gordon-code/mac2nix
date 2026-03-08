@@ -13,7 +13,7 @@ from mac2nix.scanners.base import BaseScannerPlugin, register
 logger = logging.getLogger(__name__)
 
 
-@register
+@register("audio")
 class AudioScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:
@@ -60,20 +60,22 @@ class AudioScanner(BaseScannerPlugin):
                 uid = device_data.get("coreaudio_device_uid")
                 device = AudioDevice(name=name, uid=uid)
 
-                if "coreaudio_device_input" in device_data or "coreaudio_input_source" in device_data:
+                is_input, is_output = self._classify_device(device_data)
+                if is_input:
                     input_devices.append(device)
-                if "coreaudio_device_output" in device_data or "coreaudio_default_audio_output_device" in device_data:
-                    output_devices.append(device)
-                # If neither, treat as output (most common)
-                if (
-                    "coreaudio_device_input" not in device_data
-                    and "coreaudio_input_source" not in device_data
-                    and "coreaudio_device_output" not in device_data
-                    and "coreaudio_default_audio_output_device" not in device_data
-                ):
+                if is_output:
                     output_devices.append(device)
 
         return input_devices, output_devices
+
+    @staticmethod
+    def _classify_device(device_data: dict[str, object]) -> tuple[bool, bool]:
+        """Classify a device as input, output, or both. Defaults to output."""
+        is_input = "coreaudio_device_input" in device_data or "coreaudio_input_source" in device_data
+        is_output = "coreaudio_device_output" in device_data or "coreaudio_default_audio_output_device" in device_data
+        if not is_input and not is_output:
+            is_output = True
+        return is_input, is_output
 
     def _get_default_devices(
         self,

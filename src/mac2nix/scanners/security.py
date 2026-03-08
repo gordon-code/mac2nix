@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _FIREWALL_PATH = "/usr/libexec/ApplicationFirewall/socketfilterfw"
 
 
-@register
+@register("security")
 class SecurityScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:

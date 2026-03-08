@@ -121,6 +121,24 @@ class TestDotfilesScanner:
         gitconfig = next(e for e in result.entries if e.path.name == ".gitconfig")
         assert gitconfig.content_hash is None
 
+    def test_stow_parent_name_detection(self, tmp_path: Path) -> None:
+        stow_dir = tmp_path / "mystow" / "vim"
+        stow_dir.mkdir(parents=True)
+        target = stow_dir / ".vimrc"
+        target.write_text("set number")
+        link = tmp_path / ".vimrc"
+        link.symlink_to(target)
+
+        with (
+            patch("mac2nix.scanners.dotfiles.Path.home", return_value=tmp_path),
+            patch("mac2nix.scanners.dotfiles._SCAN_DIRS", []),
+        ):
+            result = DotfilesScanner().scan()
+
+        assert isinstance(result, DotfilesResult)
+        vimrc = next(e for e in result.entries if e.path.name == ".vimrc")
+        assert vimrc.managed_by == DotfileManager.STOW
+
     def test_returns_dotfiles_result(self, tmp_path: Path) -> None:
         with (
             patch("mac2nix.scanners.dotfiles.Path.home", return_value=tmp_path),

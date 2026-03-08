@@ -31,7 +31,7 @@ _SCAN_DIRS = [
 ]
 
 
-@register
+@register("dotfiles")
 class DotfilesScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:
@@ -76,7 +76,7 @@ class DotfilesScanner(BaseScannerPlugin):
                 raw_target = path.readlink()
                 # Resolve relative targets against parent directory
                 symlink_target = raw_target if raw_target.is_absolute() else (path.parent / raw_target).resolve()
-                managed_by = self._detect_manager(path, symlink_target, home)
+                managed_by = self._detect_manager(symlink_target, home)
         except OSError as exc:
             logger.warning("Error reading symlink %s: %s", path, exc)
             managed_by = DotfileManager.UNKNOWN
@@ -90,7 +90,7 @@ class DotfilesScanner(BaseScannerPlugin):
             symlink_target=symlink_target,
         )
 
-    def _detect_manager(self, _path: Path, target: Path, home: Path) -> DotfileManager:
+    def _detect_manager(self, target: Path, home: Path) -> DotfileManager:
         # Check for GNU Stow
         try:
             stow_ignore = target.parent / ".stow-local-ignore"
@@ -105,11 +105,11 @@ class DotfilesScanner(BaseScannerPlugin):
 
         # Check for git-managed dotfiles
         for dotfiles_dir in [home / ".dotfiles", home / "dotfiles"]:
-            if dotfiles_dir.is_dir() and (dotfiles_dir / ".git").exists():
-                try:
-                    if target.is_relative_to(dotfiles_dir):
-                        return DotfileManager.GIT
-                except ValueError:
-                    pass
+            if (
+                dotfiles_dir.is_dir()
+                and (dotfiles_dir / ".git").exists()
+                and target.is_relative_to(dotfiles_dir)
+            ):
+                return DotfileManager.GIT
 
         return DotfileManager.UNKNOWN
