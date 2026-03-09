@@ -16,6 +16,7 @@ build/
 # IDE
 .vscode/
 .idea/
+.serena/
 
 # macOS
 .DS_Store

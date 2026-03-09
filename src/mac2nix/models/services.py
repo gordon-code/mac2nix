@@ -20,6 +20,7 @@ class LaunchAgentEntry(BaseModel):
     program: str | None = None
     program_arguments: list[str] = []
     run_at_load: bool = False
+    enabled: bool = True
     source: LaunchAgentSource
     plist_path: Path | None = None
 

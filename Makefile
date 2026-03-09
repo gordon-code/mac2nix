@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: install lint format typecheck test test-quick clean all
+.PHONY: install lint format typecheck test test-quick clean all prek-install prek
 
 install:
 	uv sync
@@ -24,5 +24,11 @@ test-quick:
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -rf .cache/ dist/ *.egg-info src/*.egg-info
+
+prek-install:
+	uvx prek install
+
+prek:
+	uvx prek run --all-files
 
 all: install lint typecheck test

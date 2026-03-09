@@ -62,7 +62,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**/*.py" = ["S101"]  # assert is the test framework
+"**/tests/**/*.py" = ["S101", "SLF001"]  # assert + private member access OK in tests
 
 [tool.ruff.lint.isort]
 known-first-party = ["mac2nix"]
