@@ -30,6 +30,8 @@ class ConfigFileType(StrEnum):
     JSON = "json"
     PLIST = "plist"
     TOML = "toml"
+    YAML = "yaml"
+    XML = "xml"
     CONF = "conf"
     DATABASE = "database"
     UNKNOWN = "unknown"

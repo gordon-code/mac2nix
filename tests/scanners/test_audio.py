@@ -153,6 +153,42 @@ class TestAudioScanner:
         assert result.output_devices[0].name == "Mystery Device"
         assert result.input_devices == []
 
+    def test_default_device_uses_explicit_marker(self, cmd_result) -> None:
+        """Default output should use coreaudio_default_audio_output_device, not first-in-list."""
+        audio_json = {
+            "SPAudioDataType": [
+                {
+                    "_name": "GPU",
+                    "_items": [
+                        {
+                            "_name": "HDMI Output",
+                            "coreaudio_device_uid": "hdmi",
+                            "coreaudio_device_output": "yes",
+                        },
+                        {
+                            "_name": "Built-in Speakers",
+                            "coreaudio_device_uid": "builtin",
+                            "coreaudio_device_output": "yes",
+                            "coreaudio_default_audio_output_device": "spaudio_yes",
+                        },
+                    ],
+                }
+            ]
+        }
+
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPAudioDataType" in cmd:
+                return cmd_result(json.dumps(audio_json))
+            return None
+
+        with patch("mac2nix.scanners.audio.run_command", side_effect=side_effect):
+            result = AudioScanner().scan()
+
+        assert isinstance(result, AudioConfig)
+        assert len(result.output_devices) == 2
+        # Default should be the explicitly marked device, not the first one
+        assert result.default_output == "Built-in Speakers"
+
     def test_returns_audio_config(self) -> None:
         with patch("mac2nix.scanners.audio.run_command", return_value=None):
             result = AudioScanner().scan()

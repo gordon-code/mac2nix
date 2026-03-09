@@ -23,8 +23,7 @@ class AudioScanner(BaseScannerPlugin):
         return shutil.which("system_profiler") is not None
 
     def scan(self) -> AudioConfig:
-        input_devices, output_devices = self._get_audio_devices()
-        default_input, default_output = self._get_default_devices(input_devices, output_devices)
+        input_devices, output_devices, default_input, default_output = self._get_audio_devices()
         alert_volume = self._get_alert_volume()
 
         return AudioConfig(
@@ -35,19 +34,23 @@ class AudioScanner(BaseScannerPlugin):
             alert_volume=alert_volume,
         )
 
-    def _get_audio_devices(self) -> tuple[list[AudioDevice], list[AudioDevice]]:
+    def _get_audio_devices(
+        self,
+    ) -> tuple[list[AudioDevice], list[AudioDevice], str | None, str | None]:
         result = run_command(["system_profiler", "SPAudioDataType", "-json"], timeout=15)
         if result is None or result.returncode != 0:
-            return [], []
+            return [], [], None, None
 
         try:
             data = json.loads(result.stdout)
         except (json.JSONDecodeError, ValueError):
             logger.warning("Failed to parse system_profiler audio output")
-            return [], []
+            return [], [], None, None
 
         input_devices: list[AudioDevice] = []
         output_devices: list[AudioDevice] = []
+        default_input: str | None = None
+        default_output: str | None = None
 
         for item in data.get("SPAudioDataType", []):
             if not isinstance(item, dict):
@@ -63,10 +66,20 @@ class AudioScanner(BaseScannerPlugin):
                 is_input, is_output = self._classify_device(device_data)
                 if is_input:
                     input_devices.append(device)
+                    if "coreaudio_default_audio_input_device" in device_data:
+                        default_input = name
                 if is_output:
                     output_devices.append(device)
+                    if "coreaudio_default_audio_output_device" in device_data:
+                        default_output = name
 
-        return input_devices, output_devices
+        # Fall back to first device if system_profiler didn't mark a default
+        if default_input is None and input_devices:
+            default_input = input_devices[0].name
+        if default_output is None and output_devices:
+            default_output = output_devices[0].name
+
+        return input_devices, output_devices, default_input, default_output
 
     @staticmethod
     def _classify_device(device_data: dict[str, object]) -> tuple[bool, bool]:
@@ -76,15 +89,6 @@ class AudioScanner(BaseScannerPlugin):
         if not is_input and not is_output:
             is_output = True
         return is_input, is_output
-
-    def _get_default_devices(
-        self,
-        input_devices: list[AudioDevice],
-        output_devices: list[AudioDevice],
-    ) -> tuple[str | None, str | None]:
-        default_input = input_devices[0].name if input_devices else None
-        default_output = output_devices[0].name if output_devices else None
-        return default_input, default_output
 
     def _get_alert_volume(self) -> float | None:
         result = run_command(["osascript", "-e", "alert volume of (get volume settings)"])

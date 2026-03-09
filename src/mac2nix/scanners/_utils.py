@@ -122,7 +122,7 @@ def _parse_xml_dict(element: ElementTree.Element) -> dict[str, Any]:
     result: dict[str, Any] = {}
     children = list(element)
     i = 0
-    while i < len(children) - 1:
+    while i + 1 < len(children):
         if children[i].tag == "key":
             key = children[i].text or ""
             value_elem = children[i + 1]
@@ -165,8 +165,11 @@ def read_launchd_plists() -> list[tuple[Path, str, dict[str, Any]]]:
             continue
         try:
             plist_files = sorted(agent_dir.glob("*.plist"))
-        except PermissionError:
-            logger.warning("Permission denied reading: %s", agent_dir)
+        except PermissionError as exc:
+            if exc.errno == errno.EPERM:
+                logger.debug("Skipping TCC-protected directory: %s", agent_dir)
+            else:
+                logger.warning("Permission denied reading: %s", agent_dir)
             continue
         for plist_path in plist_files:
             data = read_plist_safe(plist_path)

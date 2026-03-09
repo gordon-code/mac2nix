@@ -16,6 +16,9 @@ _EXTENSION_MAP: dict[str, ConfigFileType] = {
     ".json": ConfigFileType.JSON,
     ".plist": ConfigFileType.PLIST,
     ".toml": ConfigFileType.TOML,
+    ".yaml": ConfigFileType.YAML,
+    ".yml": ConfigFileType.YAML,
+    ".xml": ConfigFileType.XML,
     ".conf": ConfigFileType.CONF,
     ".cfg": ConfigFileType.CONF,
     ".ini": ConfigFileType.CONF,
@@ -23,8 +26,6 @@ _EXTENSION_MAP: dict[str, ConfigFileType] = {
     ".db": ConfigFileType.DATABASE,
     ".sqlite3": ConfigFileType.DATABASE,
 }
-
-_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 
 @register("app_config")
@@ -70,11 +71,6 @@ class AppConfigScanner(BaseScannerPlugin):
 
         for child in children:
             if not child.is_file():
-                continue
-            try:
-                if child.stat().st_size > _MAX_FILE_SIZE:
-                    continue
-            except OSError:
                 continue
 
             ext = child.suffix.lower()

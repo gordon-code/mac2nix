@@ -134,21 +134,32 @@ class TestAppConfigScanner:
         assert result.entries[0].app_name == "group.com.example.app"
         assert result.entries[0].file_type == ConfigFileType.JSON
 
-    def test_large_file_skipped(self, tmp_path: Path) -> None:
+    def test_yaml_extension(self, tmp_path: Path) -> None:
         app_support = _setup_app_support(tmp_path)
-        app_dir = app_support / "BigApp"
+        app_dir = app_support / "YamlApp"
         app_dir.mkdir()
-        large_file = app_dir / "huge.json"
-        large_file.write_text("x")
+        (app_dir / "config.yaml").write_text("key: value")
+        (app_dir / "settings.yml").write_text("other: true")
 
-        with (
-            patch("mac2nix.scanners.app_config.Path.home", return_value=tmp_path),
-            patch("mac2nix.scanners.app_config._MAX_FILE_SIZE", 0),
-        ):
+        with patch("mac2nix.scanners.app_config.Path.home", return_value=tmp_path):
             result = AppConfigScanner().scan()
 
         assert isinstance(result, AppConfigResult)
-        assert result.entries == []
+        assert len(result.entries) == 2
+        assert all(e.file_type == ConfigFileType.YAML for e in result.entries)
+
+    def test_xml_extension(self, tmp_path: Path) -> None:
+        app_support = _setup_app_support(tmp_path)
+        app_dir = app_support / "XmlApp"
+        app_dir.mkdir()
+        (app_dir / "config.xml").write_text("<config/>")
+
+        with patch("mac2nix.scanners.app_config.Path.home", return_value=tmp_path):
+            result = AppConfigScanner().scan()
+
+        assert isinstance(result, AppConfigResult)
+        assert len(result.entries) == 1
+        assert result.entries[0].file_type == ConfigFileType.XML
 
     def test_returns_app_config_result(self, tmp_path: Path) -> None:
         with patch("mac2nix.scanners.app_config.Path.home", return_value=tmp_path):
