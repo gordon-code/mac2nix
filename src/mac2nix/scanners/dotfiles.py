@@ -105,11 +105,7 @@ class DotfilesScanner(BaseScannerPlugin):
 
         # Check for git-managed dotfiles
         for dotfiles_dir in [home / ".dotfiles", home / "dotfiles"]:
-            if (
-                dotfiles_dir.is_dir()
-                and (dotfiles_dir / ".git").exists()
-                and target.is_relative_to(dotfiles_dir)
-            ):
+            if dotfiles_dir.is_dir() and (dotfiles_dir / ".git").exists() and target.is_relative_to(dotfiles_dir):
                 return DotfileManager.GIT
 
         return DotfileManager.UNKNOWN

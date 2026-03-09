@@ -131,10 +131,7 @@ class TestShellScanner:
 
     def test_sensitive_posix_vars_filtered(self, tmp_path: Path) -> None:
         (tmp_path / ".zshrc").write_text(
-            "export API_KEY=secret123\n"
-            "export GH_TOKEN=ghp_abc\n"
-            "export DB_PASSWORD=hunter2\n"
-            "export EDITOR=vim\n"
+            "export API_KEY=secret123\nexport GH_TOKEN=ghp_abc\nexport DB_PASSWORD=hunter2\nexport EDITOR=vim\n"
         )
 
         with (
@@ -153,9 +150,7 @@ class TestShellScanner:
         config_fish = tmp_path / ".config" / "fish"
         config_fish.mkdir(parents=True)
         (config_fish / "config.fish").write_text(
-            "set -gx API_KEY secret123\n"
-            "set -gx AWS_SECRET_ACCESS_KEY abc\n"
-            "set -gx EDITOR nvim\n"
+            "set -gx API_KEY secret123\nset -gx AWS_SECRET_ACCESS_KEY abc\nset -gx EDITOR nvim\n"
         )
 
         with (
