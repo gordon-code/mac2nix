@@ -47,7 +47,7 @@ class AppConfigScanner(BaseScannerPlugin):
             try:
                 app_dirs = sorted(base_dir.iterdir())
             except PermissionError:
-                logger.warning("Permission denied reading: %s", base_dir)
+                logger.debug("Permission denied reading: %s", base_dir)
                 continue
             for app_dir in app_dirs:
                 if not app_dir.is_dir():
@@ -61,7 +61,7 @@ class AppConfigScanner(BaseScannerPlugin):
         try:
             children = sorted(app_dir.iterdir())
         except PermissionError:
-            logger.warning("Permission denied reading app config dir: %s", app_dir)
+            logger.debug("Permission denied reading app config dir: %s", app_dir)
             return
 
         for child in children:

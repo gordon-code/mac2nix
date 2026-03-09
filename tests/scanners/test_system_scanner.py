@@ -1,6 +1,7 @@
 """Tests for system scanner."""
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 from mac2nix.models.system import SystemConfig
@@ -65,6 +66,21 @@ class TestSystemScanner:
 
         assert isinstance(result, SystemConfig)
         assert result.timezone == "America/New_York"
+
+    def test_timezone_fallback_localtime(self, tmp_path: Path) -> None:
+        zoneinfo = tmp_path / "var" / "db" / "timezone" / "zoneinfo" / "US" / "Eastern"
+        zoneinfo.mkdir(parents=True)
+        localtime = tmp_path / "localtime"
+        localtime.symlink_to(zoneinfo)
+
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner._LOCALTIME_PATH", localtime),
+        ):
+            result = SystemScanner().scan()
+
+        assert isinstance(result, SystemConfig)
+        assert result.timezone == "US/Eastern"
 
     def test_locale(self, cmd_result) -> None:
         def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:

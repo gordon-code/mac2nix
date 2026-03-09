@@ -35,7 +35,7 @@ class PreferencesScanner(BaseScannerPlugin):
                 if not plist_path.is_file():
                     continue
                 data = read_plist_safe(plist_path)
-                if data is None:
+                if not isinstance(data, dict):
                     continue
                 domains.append(
                     PreferencesDomain(

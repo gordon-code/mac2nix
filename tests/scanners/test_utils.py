@@ -100,6 +100,24 @@ class TestReadPlistSafe:
 
         assert result is None
 
+    def test_read_plist_safe_corrupt_datetime(self, tmp_path: Path) -> None:
+        plist_file = tmp_path / "corrupt_date.plist"
+        plist_file.write_bytes(plistlib.dumps({"key": "value"}))
+
+        with patch.object(Path, "open", side_effect=ValueError("year 0 is out of range")):
+            result = read_plist_safe(plist_file)
+
+        assert result is None
+
+    def test_read_plist_safe_overflow_datetime(self, tmp_path: Path) -> None:
+        plist_file = tmp_path / "overflow_date.plist"
+        plist_file.write_bytes(plistlib.dumps({"key": "value"}))
+
+        with patch.object(Path, "open", side_effect=OverflowError("timestamp out of range")):
+            result = read_plist_safe(plist_file)
+
+        assert result is None
+
     def test_read_plist_safe_converts_datetimes(self, tmp_path: Path) -> None:
         dt = datetime(2026, 1, 15, 10, 30, 0, tzinfo=UTC)
         plist_data = {"created": dt, "name": "test"}

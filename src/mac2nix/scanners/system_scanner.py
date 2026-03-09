@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import shutil
+from pathlib import Path
 
 from mac2nix.models.system import SystemConfig
 from mac2nix.scanners._utils import run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
+
+_LOCALTIME_PATH = Path("/etc/localtime")
 
 
 @register("system")
@@ -48,12 +51,21 @@ class SystemScanner(BaseScannerPlugin):
 
     def _get_timezone(self) -> str | None:
         result = run_command(["systemsetup", "-gettimezone"])
-        if result is None or result.returncode != 0:
-            return None
-        # Output: 'Time Zone: America/New_York'
-        output = result.stdout.strip()
-        if "Time Zone:" in output:
-            return output.split("Time Zone:", 1)[1].strip()
+        if result is not None and result.returncode == 0:
+            output = result.stdout.strip()
+            if "Time Zone:" in output:
+                return output.split("Time Zone:", 1)[1].strip()
+
+        # Fallback: parse /etc/localtime symlink (works without admin privileges)
+        localtime = _LOCALTIME_PATH
+        try:
+            target = str(localtime.resolve())
+            marker = "zoneinfo/"
+            if marker in target:
+                return target.split(marker, 1)[1]
+        except OSError:
+            pass
+
         return None
 
     def _get_locale(self) -> str | None:
