@@ -10,6 +10,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +77,76 @@ def read_plist_safe(path: Path) -> dict[str, Any] | None:
     except plistlib.InvalidFileException:
         logger.debug("Invalid plist file: %s", path)
         return None
-    except (ValueError, OverflowError) as exc:
-        logger.warning("Plist contains unrepresentable data %s: %s", path, exc)
-        return None
+    except (ValueError, OverflowError):
+        # plistlib can't handle dates like year 0 (Apple's "no date" sentinel).
+        # Fall back to plutil XML conversion which preserves dates as strings.
+        data = _read_plist_via_plutil(path)
+        if data is None:
+            logger.warning("Plist contains unrepresentable data: %s", path)
+            return None
     except OSError as exc:
         logger.warning("Failed to read plist %s: %s", path, exc)
         return None
 
     return _convert_datetimes(data)
+
+
+def _read_plist_via_plutil(path: Path) -> dict[str, Any] | None:
+    """Fallback plist reader using plutil XML conversion.
+
+    Parses the XML manually to handle dates that Python's datetime can't
+    represent (e.g., year 0000, year 4001). Dates are kept as ISO strings.
+    """
+    result = run_command(["plutil", "-convert", "xml1", "-o", "-", str(path)])
+    if result is None or result.returncode != 0:
+        return None
+
+    try:
+        root = ElementTree.fromstring(result.stdout)  # noqa: S314
+    except ElementTree.ParseError:
+        return None
+
+    top_dict = root.find("dict")
+    if top_dict is None:
+        return None
+
+    return _parse_xml_dict(top_dict)
+
+
+def _parse_xml_dict(element: ElementTree.Element) -> dict[str, Any]:
+    """Parse a plist <dict> element into a Python dict."""
+    result: dict[str, Any] = {}
+    children = list(element)
+    i = 0
+    while i < len(children) - 1:
+        if children[i].tag == "key":
+            key = children[i].text or ""
+            value_elem = children[i + 1]
+            result[key] = _parse_xml_value(value_elem)
+            i += 2
+        else:
+            i += 1
+    return result
+
+
+_XML_LITERAL_TAGS: dict[str, Any] = {"true": True, "false": False}
+
+
+def _parse_xml_value(element: ElementTree.Element) -> Any:
+    """Parse a plist value element into a Python object."""
+    tag = element.tag
+    text = element.text or ""
+
+    if tag in _XML_LITERAL_TAGS:
+        return _XML_LITERAL_TAGS[tag]
+    if tag == "dict":
+        return _parse_xml_dict(element)
+    if tag == "array":
+        return [_parse_xml_value(child) for child in element]
+    # string, date, data → text; integer/real → parsed; unknown → text
+    converters: dict[str, Any] = {"integer": int, "real": float}
+    converter = converters.get(tag)
+    return converter(text) if converter else text
 
 
 def read_launchd_plists() -> list[tuple[Path, str, dict[str, Any]]]:
