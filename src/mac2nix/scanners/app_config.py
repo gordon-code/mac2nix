@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 from pathlib import Path
 
@@ -60,10 +61,13 @@ class AppConfigScanner(BaseScannerPlugin):
         app_name = app_dir.name
         try:
             children = sorted(app_dir.iterdir())
-        except PermissionError:
-            # macOS TCC protects many dirs in Application Support / Group Containers
-            # regardless of naming convention — user can't fix this, so DEBUG.
-            logger.debug("Permission denied (TCC-protected): %s", app_dir)
+        except PermissionError as exc:
+            if exc.errno == errno.EPERM:
+                # EPERM = macOS TCC kernel enforcement, not a real permission issue
+                logger.debug("Skipping TCC-protected directory: %s", app_dir)
+            else:
+                # EACCES = actual POSIX permission denied — worth flagging
+                logger.warning("Permission denied reading app config dir: %s", app_dir)
             return
 
         for child in children:

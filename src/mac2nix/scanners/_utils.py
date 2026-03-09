@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import plistlib
@@ -71,8 +72,11 @@ def read_plist_safe(path: Path) -> dict[str, Any] | None:
     try:
         with path.open("rb") as f:
             data = plistlib.load(f)
-    except PermissionError:
-        logger.debug("Permission denied reading plist: %s", path)
+    except PermissionError as exc:
+        if exc.errno == errno.EPERM:
+            logger.debug("Skipping TCC-protected plist: %s", path)
+        else:
+            logger.warning("Permission denied reading plist: %s", path)
         return None
     except plistlib.InvalidFileException:
         logger.debug("Invalid plist file: %s", path)
