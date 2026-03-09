@@ -70,8 +70,17 @@ def read_plist_safe(path: Path) -> dict[str, Any] | None:
     try:
         with path.open("rb") as f:
             data = plistlib.load(f)
-    except (plistlib.InvalidFileException, PermissionError, OSError, ValueError, OverflowError) as exc:
-        logger.debug("Failed to read plist %s: %s", path, exc)
+    except PermissionError:
+        logger.debug("Permission denied reading plist: %s", path)
+        return None
+    except plistlib.InvalidFileException:
+        logger.debug("Invalid plist file: %s", path)
+        return None
+    except (ValueError, OverflowError) as exc:
+        logger.warning("Plist contains unrepresentable data %s: %s", path, exc)
+        return None
+    except OSError as exc:
+        logger.warning("Failed to read plist %s: %s", path, exc)
         return None
 
     return _convert_datetimes(data)

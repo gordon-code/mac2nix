@@ -7,6 +7,11 @@ from mac2nix.models.services import ShellConfig
 from mac2nix.scanners.shell import ShellScanner
 
 
+def _patch_shell(shell_path: str):
+    """Patch _get_login_shell to return a specific shell path."""
+    return patch.object(ShellScanner, "_get_login_shell", return_value=shell_path)
+
+
 class TestShellScanner:
     def test_name_property(self) -> None:
         assert ShellScanner().name == "shell"
@@ -17,7 +22,7 @@ class TestShellScanner:
         (config_fish / "config.fish").write_text("# fish config")
 
         with (
-            patch.dict("os.environ", {"SHELL": "/opt/homebrew/bin/fish"}),
+            _patch_shell("/opt/homebrew/bin/fish"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -29,7 +34,7 @@ class TestShellScanner:
         (tmp_path / ".zshrc").write_text("# zsh config")
 
         with (
-            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            _patch_shell("/bin/zsh"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -41,7 +46,7 @@ class TestShellScanner:
         (tmp_path / ".zshrc").write_text("alias ll='ls -la'\nalias gs='git status'\n")
 
         with (
-            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            _patch_shell("/bin/zsh"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -56,7 +61,7 @@ class TestShellScanner:
         (config_fish / "config.fish").write_text("fish_add_path /opt/homebrew/bin\nfish_add_path ~/.local/bin\n")
 
         with (
-            patch.dict("os.environ", {"SHELL": "/usr/local/bin/fish"}),
+            _patch_shell("/usr/local/bin/fish"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -68,7 +73,7 @@ class TestShellScanner:
         (tmp_path / ".zshrc").write_text("export EDITOR=vim\nexport GOPATH=/home/user/go\n")
 
         with (
-            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            _patch_shell("/bin/zsh"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -82,7 +87,7 @@ class TestShellScanner:
         (config_fish / "config.fish").write_text("set -gx EDITOR nvim\n")
 
         with (
-            patch.dict("os.environ", {"SHELL": "/usr/local/bin/fish"}),
+            _patch_shell("/usr/local/bin/fish"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -100,7 +105,7 @@ class TestShellScanner:
         (func_dir / "my_func.fish").write_text("function my_func; end")
 
         with (
-            patch.dict("os.environ", {"SHELL": "/opt/homebrew/bin/fish"}),
+            _patch_shell("/opt/homebrew/bin/fish"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -111,7 +116,7 @@ class TestShellScanner:
 
     def test_missing_rc_file(self, tmp_path: Path) -> None:
         with (
-            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            _patch_shell("/bin/zsh"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -121,7 +126,7 @@ class TestShellScanner:
 
     def test_unknown_shell_defaults_to_zsh(self, tmp_path: Path) -> None:
         with (
-            patch.dict("os.environ", {"SHELL": "/usr/local/bin/nu"}),
+            _patch_shell("/usr/local/bin/nu"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -135,7 +140,7 @@ class TestShellScanner:
         )
 
         with (
-            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            _patch_shell("/bin/zsh"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -154,7 +159,7 @@ class TestShellScanner:
         )
 
         with (
-            patch.dict("os.environ", {"SHELL": "/usr/local/bin/fish"}),
+            _patch_shell("/usr/local/bin/fish"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -168,7 +173,7 @@ class TestShellScanner:
         (tmp_path / ".zshrc").write_text("my_func() {\n  echo hello\n}\n")
 
         with (
-            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            _patch_shell("/bin/zsh"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()
@@ -176,9 +181,27 @@ class TestShellScanner:
         assert isinstance(result, ShellConfig)
         assert "my_func" in result.functions
 
+    def test_dscl_login_shell_detection(self, cmd_result) -> None:
+        with patch(
+            "mac2nix.scanners.shell.run_command",
+            return_value=cmd_result("UserShell: /opt/homebrew/bin/fish\n"),
+        ):
+            shell = ShellScanner._get_login_shell()
+
+        assert shell == "/opt/homebrew/bin/fish"
+
+    def test_dscl_fallback_to_env(self) -> None:
+        with (
+            patch("mac2nix.scanners.shell.run_command", return_value=None),
+            patch.dict("os.environ", {"SHELL": "/bin/bash"}),
+        ):
+            shell = ShellScanner._get_login_shell()
+
+        assert shell == "/bin/bash"
+
     def test_returns_shell_config(self, tmp_path: Path) -> None:
         with (
-            patch.dict("os.environ", {"SHELL": "/bin/zsh"}),
+            _patch_shell("/bin/zsh"),
             patch("mac2nix.scanners.shell.Path.home", return_value=tmp_path),
         ):
             result = ShellScanner().scan()

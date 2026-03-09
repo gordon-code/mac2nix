@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import logging
 import os
 import re
@@ -9,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mac2nix.models.services import ShellConfig
+from mac2nix.scanners._utils import run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,7 @@ class ShellScanner(BaseScannerPlugin):
         return "shell"
 
     def scan(self) -> ShellConfig:
-        shell_path = os.environ.get("SHELL", "/bin/zsh")
+        shell_path = self._get_login_shell()
         shell_type = Path(shell_path).name
         # Normalize to known types
         if shell_type not in _RC_FILES:
@@ -84,6 +86,22 @@ class ShellScanner(BaseScannerPlugin):
             functions=parsed.functions,
             env_vars=parsed.env_vars,
         )
+
+    @staticmethod
+    def _get_login_shell() -> str:
+        """Get the user's login shell via dscl (macOS directory service).
+
+        Falls back to $SHELL, then /bin/zsh.
+        """
+        username = getpass.getuser()
+        result = run_command(["dscl", ".", "-read", f"/Users/{username}", "UserShell"])
+        if result is not None and result.returncode == 0:
+            # Output: "UserShell: /opt/homebrew/bin/fish"
+            output = result.stdout.strip()
+            if "UserShell:" in output:
+                return output.split("UserShell:", 1)[1].strip()
+
+        return os.environ.get("SHELL", "/bin/zsh")
 
     def _parse_rc_file(self, rc_path: Path, shell_type: str, parsed: _ParsedShellData) -> None:
         try:

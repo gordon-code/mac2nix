@@ -94,9 +94,12 @@ class LaunchAgentsScanner(BaseScannerPlugin):
             if not name or name == "(null)":
                 name = item.get("Bundle Identifier", item.get("Identifier", ""))
             if name:
+                disposition = item.get("Disposition", "")
+                enabled = "enabled" in disposition
                 entries.append(
                     LaunchAgentEntry(
                         label=name,
+                        enabled=enabled,
                         source=LaunchAgentSource.LOGIN_ITEM,
                     )
                 )
