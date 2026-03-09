@@ -1,11 +1,52 @@
 """Tests for launch agents scanner."""
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
 from mac2nix.models.services import LaunchAgentSource, LaunchAgentsResult
 from mac2nix.scanners.launch_agents import LaunchAgentsScanner
+
+_BTM_OUTPUT = """\
+========================
+ Records for UID 501 : AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE
+========================
+
+ ServiceManagement migrated: true
+
+ Items:
+
+ #1:
+                 UUID: 11111111-1111-1111-1111-111111111111
+                 Name: Dropbox
+       Developer Name: Dropbox, Inc.
+                 Type: login item (0x4)
+                Flags: [  ] (0)
+          Disposition: [enabled, allowed, notified] (0xb)
+           Identifier: 4.com.getdropbox.dropbox.helper
+                  URL: Contents/Library/LoginItems/DropboxHelper.app
+           Generation: 1
+    Bundle Identifier: com.getdropbox.dropbox.helper
+    Parent Identifier: 2.com.getdropbox.dropbox
+
+ #2:
+                 UUID: 22222222-2222-2222-2222-222222222222
+                 Name: Alfred
+       Developer Name: Running with Crayons Ltd
+                 Type: login item (0x4)
+                Flags: [  ] (0)
+          Disposition: [enabled, allowed, notified] (0xb)
+           Identifier: 4.com.runningwithcrayons.Alfred
+    Bundle Identifier: com.runningwithcrayons.Alfred
+
+ #3:
+                 UUID: 33333333-3333-3333-3333-333333333333
+                 Name: nix-store
+       Developer Name: Determinate Systems
+                 Type: legacy daemon (0x10010)
+                Flags: [ legacy ] (0x1)
+          Disposition: [enabled, allowed, notified] (0xb)
+           Identifier: 16.systems.determinate.nix-store
+"""
 
 
 class TestLaunchAgentsScanner:
@@ -55,19 +96,11 @@ class TestLaunchAgentsScanner:
         assert isinstance(result, LaunchAgentsResult)
         assert result.entries[0].source == LaunchAgentSource.DAEMON
 
-    def test_sfltool_login_items(self, cmd_result) -> None:
-        login_items = [
-            {"name": "Dropbox", "bundleIdentifier": "com.getdropbox.dropbox"},
-            {"name": "Alfred", "bundleIdentifier": "com.runningwithcrayons.Alfred"},
-        ]
-        sfltool_output = json.dumps(login_items)
-
+    def test_btm_login_items(self, cmd_result) -> None:
         with (
             patch("mac2nix.scanners.launch_agents.read_launchd_plists", return_value=[]),
-            patch(
-                "mac2nix.scanners.launch_agents.run_command",
-                return_value=cmd_result(sfltool_output),
-            ),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=cmd_result(_BTM_OUTPUT)),
+            patch("mac2nix.scanners.launch_agents.os.getuid", return_value=501),
         ):
             result = LaunchAgentsScanner().scan()
 
@@ -78,18 +111,59 @@ class TestLaunchAgentsScanner:
         assert "Dropbox" in labels
         assert "Alfred" in labels
 
-    def test_sfltool_unavailable(self) -> None:
+    def test_btm_skips_non_login_items(self, cmd_result) -> None:
         with (
             patch("mac2nix.scanners.launch_agents.read_launchd_plists", return_value=[]),
-            patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=cmd_result(_BTM_OUTPUT)),
+            patch("mac2nix.scanners.launch_agents.os.getuid", return_value=501),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        login_entries = [e for e in result.entries if e.source == LaunchAgentSource.LOGIN_ITEM]
+        # nix-store is a "legacy daemon", not a "login item" — should be excluded
+        labels = {e.label for e in login_entries}
+        assert "nix-store" not in labels
+
+    def test_btm_wrong_uid_returns_empty(self, cmd_result) -> None:
+        with (
+            patch("mac2nix.scanners.launch_agents.read_launchd_plists", return_value=[]),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=cmd_result(_BTM_OUTPUT)),
+            patch("mac2nix.scanners.launch_agents.os.getuid", return_value=999),
         ):
             result = LaunchAgentsScanner().scan()
 
         assert isinstance(result, LaunchAgentsResult)
-        assert result.entries == []
+        login_entries = [e for e in result.entries if e.source == LaunchAgentSource.LOGIN_ITEM]
+        assert login_entries == []
 
-    def test_malformed_plist_skipped(self) -> None:
-        """read_launchd_plists already filters bad plists; empty list means nothing parsed."""
+    def test_btm_null_name_uses_bundle_id(self, cmd_result) -> None:
+        btm_text = """\
+========================
+ Records for UID 501 : AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE
+========================
+
+ Items:
+
+ #1:
+                 UUID: 44444444-4444-4444-4444-444444444444
+                 Name: (null)
+                 Type: login item (0x4)
+           Identifier: 4.com.example.helper
+    Bundle Identifier: com.example.helper
+"""
+
+        with (
+            patch("mac2nix.scanners.launch_agents.read_launchd_plists", return_value=[]),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=cmd_result(btm_text)),
+            patch("mac2nix.scanners.launch_agents.os.getuid", return_value=501),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        login_entries = [e for e in result.entries if e.source == LaunchAgentSource.LOGIN_ITEM]
+        assert len(login_entries) == 1
+        assert login_entries[0].label == "com.example.helper"
+
+    def test_sfltool_unavailable(self) -> None:
         with (
             patch("mac2nix.scanners.launch_agents.read_launchd_plists", return_value=[]),
             patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
@@ -123,29 +197,3 @@ class TestLaunchAgentsScanner:
             result = LaunchAgentsScanner().scan()
 
         assert isinstance(result, LaunchAgentsResult)
-
-    def test_sfltool_dict_format(self, cmd_result) -> None:
-        """Test sfltool output in dict format with 'items' key instead of list format."""
-        login_items = {
-            "items": [
-                {"name": "Spotify", "bundleIdentifier": "com.spotify.client"},
-                {"name": "Steam", "bundleIdentifier": "com.valvesoftware.steam"},
-            ]
-        }
-        sfltool_output = json.dumps(login_items)
-
-        with (
-            patch("mac2nix.scanners.launch_agents.read_launchd_plists", return_value=[]),
-            patch(
-                "mac2nix.scanners.launch_agents.run_command",
-                return_value=cmd_result(sfltool_output),
-            ),
-        ):
-            result = LaunchAgentsScanner().scan()
-
-        assert isinstance(result, LaunchAgentsResult)
-        login_entries = [e for e in result.entries if e.source == LaunchAgentSource.LOGIN_ITEM]
-        assert len(login_entries) == 2
-        labels = {e.label for e in login_entries}
-        assert "Spotify" in labels
-        assert "Steam" in labels

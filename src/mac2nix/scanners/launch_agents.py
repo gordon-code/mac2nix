@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,8 @@ from mac2nix.scanners._utils import read_launchd_plists, run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
+
+_ITEM_HEADER = re.compile(r"#\d+:")
 
 _SOURCE_MAP: dict[str, LaunchAgentSource] = {
     "user": LaunchAgentSource.USER,
@@ -64,38 +67,85 @@ class LaunchAgentsScanner(BaseScannerPlugin):
         )
 
     def _get_login_items(self) -> list[LaunchAgentEntry]:
-        """Parse login items from sfltool dumpbtm output.
+        """Parse login items from sfltool dumpbtm text output.
 
-        Note: sfltool dumpbtm outputs JSON on some macOS versions but a custom
-        text format on others. When JSON parsing fails, we gracefully return an
-        empty list — login items will not be captured on those versions.
+        Filters to the current user's UID section and extracts items
+        with type "login item".
         """
         result = run_command(["sfltool", "dumpbtm"])
         if result is None or result.returncode != 0:
             return []
 
+        return self._parse_btm_text(result.stdout)
+
+    def _parse_btm_text(self, text: str) -> list[LaunchAgentEntry]:
+        """Parse the text output of sfltool dumpbtm."""
+        uid = os.getuid()
+        user_section = self._extract_user_section(text, uid)
+        if not user_section:
+            return []
+
         entries: list[LaunchAgentEntry] = []
-        try:
-            data = json.loads(result.stdout)
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("Failed to parse sfltool dumpbtm output as JSON")
-            return entries
-
-        # sfltool output structure varies by macOS version — parse defensively
-        items = data if isinstance(data, list) else data.get("items", data.get("loginItems", []))
-        if not isinstance(items, list):
-            return entries
-
-        for item in items:
-            if not isinstance(item, dict):
+        for item in self._iter_btm_items(user_section):
+            item_type = item.get("Type", "")
+            if "login item" not in item_type:
                 continue
-            label = item.get("name", item.get("label", item.get("bundleIdentifier", "")))
-            if label:
+            name = item.get("Name", "")
+            if not name or name == "(null)":
+                name = item.get("Bundle Identifier", item.get("Identifier", ""))
+            if name:
                 entries.append(
                     LaunchAgentEntry(
-                        label=str(label),
+                        label=name,
                         source=LaunchAgentSource.LOGIN_ITEM,
                     )
                 )
-
         return entries
+
+    @staticmethod
+    def _extract_user_section(text: str, uid: int) -> str:
+        """Extract the section for a specific UID from dumpbtm output."""
+        pattern = re.compile(rf"Records for UID {uid}\b")
+        lines = text.splitlines()
+        in_section = False
+        section_lines: list[str] = []
+
+        for line in lines:
+            if pattern.search(line):
+                in_section = True
+                continue
+            if in_section:
+                # New UID section starts with "==="
+                if line.startswith("===="):
+                    # Check if this is the separator after our header or a new section
+                    if section_lines:
+                        break
+                    continue
+                section_lines.append(line)
+
+        return "\n".join(section_lines)
+
+    @staticmethod
+    def _iter_btm_items(section: str) -> list[dict[str, str]]:
+        """Parse individual items from a BTM section into key-value dicts."""
+        items: list[dict[str, str]] = []
+        current: dict[str, str] = {}
+
+        for raw_line in section.splitlines():
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            # Item boundary: " #N:"
+            if _ITEM_HEADER.match(stripped):
+                if current:
+                    items.append(current)
+                current = {}
+                continue
+            # Key-value pair: "Key: Value"
+            if ": " in stripped:
+                key, _, value = stripped.partition(": ")
+                current[key.strip()] = value.strip()
+
+        if current:
+            items.append(current)
+        return items
