@@ -74,5 +74,6 @@ class SecurityScanner(BaseScannerPlugin):
             finally:
                 conn.close()
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
-            logger.warning("Failed to read TCC database: %s", exc)
+            # TCC.db is SIP-protected on most macOS versions — expected failure
+            logger.debug("Failed to read TCC database: %s", exc)
             return {}

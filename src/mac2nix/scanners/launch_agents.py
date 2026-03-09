@@ -50,7 +50,7 @@ class LaunchAgentsScanner(BaseScannerPlugin):
     ) -> LaunchAgentEntry | None:
         label = data.get("Label")
         if not label:
-            logger.warning("Launch agent plist missing Label: %s", plist_path)
+            logger.debug("Launch agent plist missing Label (empty or broken): %s", plist_path)
             return None
 
         program = data.get("Program")

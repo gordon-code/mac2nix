@@ -46,6 +46,6 @@ class PreferencesScanner(BaseScannerPlugin):
                 )
 
         if len(domains) > 500:
-            logger.warning("Large number of preference domains found: %d", len(domains))
+            logger.info("Large number of preference domains found: %d", len(domains))
 
         return PreferencesResult(domains=domains)
