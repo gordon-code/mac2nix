@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import errno
 import logging
+import os
 from pathlib import Path
 
 from mac2nix.models.files import AppConfigEntry, AppConfigResult, ConfigFileType
@@ -53,6 +53,9 @@ class AppConfigScanner(BaseScannerPlugin):
             for app_dir in app_dirs:
                 if not app_dir.is_dir():
                     continue
+                if not os.access(app_dir, os.R_OK):
+                    logger.debug("Skipping TCC-protected directory: %s", app_dir)
+                    continue
                 self._scan_app_dir(app_dir, entries)
 
         return AppConfigResult(entries=entries)
@@ -61,13 +64,8 @@ class AppConfigScanner(BaseScannerPlugin):
         app_name = app_dir.name
         try:
             children = sorted(app_dir.iterdir())
-        except PermissionError as exc:
-            if exc.errno == errno.EPERM:
-                # EPERM = macOS TCC kernel enforcement, not a real permission issue
-                logger.debug("Skipping TCC-protected directory: %s", app_dir)
-            else:
-                # EACCES = actual POSIX permission denied — worth flagging
-                logger.warning("Permission denied reading app config dir: %s", app_dir)
+        except PermissionError:
+            logger.warning("Permission denied reading app config dir: %s", app_dir)
             return
 
         for child in children:
