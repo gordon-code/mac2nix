@@ -52,13 +52,6 @@ _SENSITIVE_KEY_PATTERNS = {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIA
 
 _MAX_FILES_PER_DIR = 200
 
-_SYSTEM_COVERED_DIRS = frozenset({
-    "Preferences",
-    "LaunchAgents",
-    "LaunchDaemons",
-    "Fonts",
-})
-
 _SYSTEM_SCAN_PATTERNS: dict[str, str] = {
     "Extensions": "*.kext",
     "PreferencePanes": "*.prefPane",
@@ -213,19 +206,18 @@ class LibraryAuditScanner(BaseScannerPlugin):
                         files.append(entry)
                     count += 1
                 # Check dirnames for workflow bundles (they're directories, not files)
-                for dirname in list(dirnames):
+                # and prune them + transient/cache subdirectories in a single pass
+                _skip = {"Caches", "Cache", "Logs", "tmp", "__pycache__"}
+                kept: list[str] = []
+                for dirname in dirnames:
                     if dirname.endswith(".workflow"):
                         wf_path = Path(dirpath) / dirname
                         wf = self._parse_workflow(wf_path)
                         if wf is not None:
                             workflows.append(wf)
-                        # Remove from dirnames to prevent walking into the bundle
-                        dirnames.remove(dirname)
-                # Skip transient/cache subdirectories
-                dirnames[:] = [
-                    d for d in dirnames
-                    if d not in {"Caches", "Cache", "Logs", "tmp", "__pycache__"}
-                ]
+                    elif dirname not in _skip:
+                        kept.append(dirname)
+                dirnames[:] = kept
         except PermissionError:
             logger.warning("Permission denied walking: %s", dir_path)
 

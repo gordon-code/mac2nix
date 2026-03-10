@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -121,24 +122,27 @@ class HomebrewScanner(BaseScannerPlugin):
         return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
     def _get_services(self) -> list[BrewService]:
-        """Parse brew services list output."""
-        result = run_command(["brew", "services", "list"])
+        """Parse brew services list via JSON output."""
+        result = run_command(["brew", "services", "list", "--json"])
         if result is None or result.returncode != 0:
             return []
 
+        try:
+            data = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return []
+
         services: list[BrewService] = []
-        for line in result.stdout.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("Name"):
+        for entry in data:
+            if not isinstance(entry, dict):
                 continue
-            parts = stripped.split()
-            if len(parts) < 2:
+            name = entry.get("name")
+            status = entry.get("status")
+            if not name or not status:
                 continue
-            name = parts[0]
-            status = parts[1]
-            user = parts[2] if len(parts) >= 3 and parts[2] != "none" else None
-            plist_str = parts[3] if len(parts) >= 4 and parts[3] != "none" else None
-            plist_path = Path(plist_str) if plist_str else None
+            user = entry.get("user") or None
+            file_path = entry.get("file") or None
+            plist_path = Path(file_path) if file_path else None
             services.append(
                 BrewService(name=name, status=status, user=user, plist_path=plist_path)
             )

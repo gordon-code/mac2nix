@@ -107,11 +107,8 @@ class ApplicationsScanner(BaseScannerPlugin):
                 apps[name_part.lower()] = app_id
         return apps
 
-    def _get_path_binaries(self, brew_names: set[str] | None = None) -> list[PathBinary]:
+    def _get_path_binaries(self) -> list[PathBinary]:
         """Walk PATH directories and collect executable binaries."""
-        if brew_names is None:
-            brew_names = set()
-
         binaries: list[PathBinary] = []
         seen_names: set[str] = set()
         path_dirs = os.environ.get("PATH", "").split(":")
@@ -133,7 +130,7 @@ class ApplicationsScanner(BaseScannerPlugin):
                         continue
                     seen_names.add(name)
 
-                    source = self._classify_binary_source(entry, brew_names)
+                    source = self._classify_binary_source(entry)
                     binaries.append(
                         PathBinary(
                             name=name,
@@ -147,21 +144,20 @@ class ApplicationsScanner(BaseScannerPlugin):
         return binaries
 
     @staticmethod
-    def _classify_binary_source(path: Path, brew_names: set[str]) -> BinarySource:
+    def _classify_binary_source(path: Path) -> BinarySource:
         """Classify a binary's source based on its path."""
         path_str = str(path)
 
-        # Check if it's a brew-installed binary
-        if path.name in brew_names:
+        # Check for brew prefix paths (Homebrew installs under /opt/homebrew/ or
+        # /usr/local/Cellar/ — match path segments to avoid false positives on
+        # directories that happen to contain "homebrew" in their name)
+        if "/opt/homebrew/" in path_str or "/Cellar/" in path_str:
             return BinarySource.BREW
 
-        # Check for brew prefix paths
-        if "/homebrew/" in path_str.lower() or "/Cellar/" in path_str:
-            return BinarySource.BREW
-
-        # Check known source patterns
+        # Check known source patterns (these are dotfile/home-relative paths
+        # that are unlikely to appear as substrings in unrelated paths)
         for pattern, source in _SOURCE_PATTERNS.items():
-            if pattern in path_str:
+            if f"/{pattern}" in path_str:
                 return source
 
         # Check system dirs

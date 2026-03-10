@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mac2nix.scanners._utils import (
-    _convert_datetimes,
+    convert_datetimes,
     hash_file,
     read_launchd_plists,
     read_plist_safe,
@@ -138,29 +138,29 @@ class TestReadPlistSafe:
 class TestConvertDatetimes:
     def test_datetime_converted(self) -> None:
         dt = datetime(2026, 3, 7, 12, 0, 0, tzinfo=UTC)
-        result = _convert_datetimes(dt)
+        result = convert_datetimes(dt)
         assert isinstance(result, str)
         assert "2026-03-07" in result
 
     def test_nested_dict(self) -> None:
         dt = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
         data = {"outer": {"inner": dt, "keep": "string"}}
-        result = _convert_datetimes(data)
+        result = convert_datetimes(data)
         assert isinstance(result["outer"]["inner"], str)
         assert result["outer"]["keep"] == "string"
 
     def test_nested_list(self) -> None:
         dt = datetime(2026, 6, 15, 8, 0, 0, tzinfo=UTC)
         data = [dt, "plain", 42]
-        result = _convert_datetimes(data)
+        result = convert_datetimes(data)
         assert isinstance(result[0], str)
         assert result[1] == "plain"
         assert result[2] == 42
 
     def test_passthrough_non_datetime(self) -> None:
-        assert _convert_datetimes("hello") == "hello"
-        assert _convert_datetimes(42) == 42
-        assert _convert_datetimes(None) is None
+        assert convert_datetimes("hello") == "hello"
+        assert convert_datetimes(42) == 42
+        assert convert_datetimes(None) is None
 
 
 class TestHashFile:

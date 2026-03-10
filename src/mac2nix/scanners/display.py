@@ -93,10 +93,12 @@ class DisplayScanner(BaseScannerPlugin):
             if data is None:
                 continue
 
-            # Night Shift data is nested under CBBlueReductionStatus
+            # Night Shift data lives under CBBlueReductionStatus. On some
+            # macOS versions the plist is keyed by user UUID at the top level
+            # (e.g. {"<uuid>": {"CBBlueReductionStatus": {...}}}), so we
+            # fall back to searching one level deep for the nested key.
             ns_data = data.get("CBBlueReductionStatus", {})
             if not isinstance(ns_data, dict):
-                # Sometimes the top-level keys vary
                 for val in data.values():
                     if isinstance(val, dict) and "CBBlueReductionStatus" in val:
                         ns_data = val["CBBlueReductionStatus"]

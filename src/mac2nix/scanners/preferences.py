@@ -7,7 +7,7 @@ import plistlib
 from pathlib import Path
 
 from mac2nix.models.preferences import PreferencesDomain, PreferencesResult, PreferenceValue
-from mac2nix.scanners._utils import _convert_datetimes, read_plist_safe, run_command
+from mac2nix.scanners._utils import convert_datetimes, read_plist_safe, run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,6 @@ _PREF_GLOBS: list[tuple[Path, str, str]] = [
     (Path.home() / "Library" / "SyncedPreferences", "*.plist", "synced"),
     (Path.home() / "Library" / "Containers", "*/Data/Library/Preferences/*.plist", "disk"),
 ]
-
 
 
 @register("preferences")
@@ -98,4 +97,4 @@ class PreferencesScanner(BaseScannerPlugin):
             return None
         if not isinstance(data, dict):
             return None
-        return _convert_datetimes(data)
+        return convert_datetimes(data)

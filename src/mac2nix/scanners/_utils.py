@@ -22,7 +22,7 @@ LAUNCHD_DIRS: list[tuple[Path, str]] = [
 ]
 
 
-def _convert_datetimes(obj: Any) -> Any:
+def convert_datetimes(obj: Any) -> Any:
     """Recursively convert non-JSON-safe plist values.
 
     plistlib returns datetime objects (for NSDate) and bytes objects (for NSData)
@@ -33,9 +33,9 @@ def _convert_datetimes(obj: Any) -> Any:
     if isinstance(obj, bytes):
         return f"<data:{len(obj)} bytes>"
     if isinstance(obj, dict):
-        return {k: _convert_datetimes(v) for k, v in obj.items()}
+        return {k: convert_datetimes(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_convert_datetimes(item) for item in obj]
+        return [convert_datetimes(item) for item in obj]
     return obj
 
 
@@ -94,7 +94,7 @@ def read_plist_safe(path: Path) -> dict[str, Any] | None:
         logger.warning("Failed to read plist %s: %s", path, exc)
         return None
 
-    return _convert_datetimes(data)
+    return convert_datetimes(data)
 
 
 def _read_plist_via_plutil(path: Path) -> dict[str, Any] | None:
