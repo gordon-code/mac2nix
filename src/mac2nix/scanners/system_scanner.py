@@ -163,9 +163,7 @@ class SystemScanner(BaseScannerPlugin):
         self,
     ) -> tuple[str | None, str | None, str | None, str | None]:
         """Parse system_profiler SPHardwareDataType for hardware info."""
-        result = run_command(
-            ["system_profiler", "SPHardwareDataType", "-json"], timeout=15
-        )
+        result = run_command(["system_profiler", "SPHardwareDataType", "-json"], timeout=15)
         if result is None or result.returncode != 0:
             return None, None, None, None
 

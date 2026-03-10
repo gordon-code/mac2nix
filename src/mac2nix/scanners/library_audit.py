@@ -33,20 +33,22 @@ _COVERED_DIRS: dict[str, str] = {
     "SyncedPreferences": "preferences",
 }
 
-_TRANSIENT_DIRS = frozenset({
-    "Caches",
-    "Logs",
-    "Saved Application State",
-    "Cookies",
-    "HTTPStorages",
-    "WebKit",
-    "Messages",
-    "Calendars",
-    "Reminders",
-    "Metadata",
-    "Updates",
-    "Autosave Information",
-})
+_TRANSIENT_DIRS = frozenset(
+    {
+        "Caches",
+        "Logs",
+        "Saved Application State",
+        "Cookies",
+        "HTTPStorages",
+        "WebKit",
+        "Messages",
+        "Calendars",
+        "Reminders",
+        "Metadata",
+        "Updates",
+        "Autosave Information",
+    }
+)
 
 _SENSITIVE_KEY_PATTERNS = {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"}
 
@@ -59,15 +61,17 @@ _SYSTEM_SCAN_PATTERNS: dict[str, str] = {
     "QuickLook": "*.qlgenerator",
 }
 
-_BUNDLE_EXTENSIONS = frozenset({
-    ".component",
-    ".vst",
-    ".saver",
-    ".prefPane",
-    ".qlgenerator",
-    ".plugin",
-    ".kext",
-})
+_BUNDLE_EXTENSIONS = frozenset(
+    {
+        ".component",
+        ".vst",
+        ".saver",
+        ".prefPane",
+        ".qlgenerator",
+        ".plugin",
+        ".kext",
+    }
+)
 
 
 def _redact_sensitive_keys(data: dict[str, Any]) -> None:
@@ -182,9 +186,7 @@ class LibraryAuditScanner(BaseScannerPlugin):
         except PermissionError:
             return None, None, None
 
-    def _capture_uncovered_dir(
-        self, dir_path: Path
-    ) -> tuple[list[LibraryFileEntry], list[WorkflowEntry]]:
+    def _capture_uncovered_dir(self, dir_path: Path) -> tuple[list[LibraryFileEntry], list[WorkflowEntry]]:
         """Capture files from an uncovered directory (capped)."""
         files: list[LibraryFileEntry] = []
         workflows: list[WorkflowEntry] = []
@@ -313,14 +315,8 @@ class LibraryAuditScanner(BaseScannerPlugin):
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
             try:
-                cursor = conn.execute(
-                    "SELECT ZSHORTCUT, ZPHRASE FROM ZTEXTREPLACEMENTENTRY"
-                )
-                return [
-                    {"shortcut": row[0], "phrase": row[1]}
-                    for row in cursor.fetchall()
-                    if row[0] and row[1]
-                ]
+                cursor = conn.execute("SELECT ZSHORTCUT, ZPHRASE FROM ZTEXTREPLACEMENTENTRY")
+                return [{"shortcut": row[0], "phrase": row[1]} for row in cursor.fetchall() if row[0] and row[1]]
             finally:
                 conn.close()
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
@@ -423,9 +419,7 @@ class LibraryAuditScanner(BaseScannerPlugin):
                 if f.is_file():
                     if f.suffix == ".scpt":
                         # Try to decompile AppleScript
-                        result = run_command(
-                            ["osadecompile", str(f)], timeout=10
-                        )
+                        result = run_command(["osadecompile", str(f)], timeout=10)
                         if result is not None and result.returncode == 0:
                             scripts.append(f"{f.name}: {result.stdout[:200]}")
                         else:

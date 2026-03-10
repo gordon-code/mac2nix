@@ -142,11 +142,7 @@ AC Power:
         assert isinstance(result, SystemConfig)
 
     def test_macos_version(self, cmd_result) -> None:
-        sw_vers_output = (
-            "ProductName:\tmacOS\n"
-            "ProductVersion:\t15.3.1\n"
-            "BuildVersion:\t24D70\n"
-        )
+        sw_vers_output = "ProductName:\tmacOS\nProductVersion:\t15.3.1\nBuildVersion:\t24D70\n"
 
         def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
             if cmd == ["scutil", "--get", "ComputerName"]:
@@ -475,10 +471,7 @@ AC Power:
         assert result.network_time_enabled is False
 
     def test_printers(self, cmd_result) -> None:
-        lpstat_a = (
-            "HP_LaserJet accepting requests since Mon Mar 9\n"
-            "Brother_HL accepting requests since Mon Mar 9\n"
-        )
+        lpstat_a = "HP_LaserJet accepting requests since Mon Mar 9\nBrother_HL accepting requests since Mon Mar 9\n"
         lpstat_d = "system default destination: HP_LaserJet\n"
         lpoptions_hp = "PageSize/Media Size: Letter *A4 Legal\nDuplex/Double-Sided: None *DuplexNoTumble\n"
         lpoptions_brother = "PageSize/Media Size: *Letter A4\n"

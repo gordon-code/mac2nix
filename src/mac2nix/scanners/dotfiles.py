@@ -12,20 +12,22 @@ from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
 
-_EXCLUDED_DOTFILES = frozenset({
-    ".Trash",
-    ".cache",
-    ".DS_Store",
-    ".CFUserTextEncoding",
-    ".bash_history",
-    ".zsh_history",
-    ".python_history",
-    ".node_repl_history",
-    ".psql_history",
-    ".sqlite_history",
-    ".lesshst",
-    ".wget-hsts",
-})
+_EXCLUDED_DOTFILES = frozenset(
+    {
+        ".Trash",
+        ".cache",
+        ".DS_Store",
+        ".CFUserTextEncoding",
+        ".bash_history",
+        ".zsh_history",
+        ".python_history",
+        ".node_repl_history",
+        ".psql_history",
+        ".sqlite_history",
+        ".lesshst",
+        ".wget-hsts",
+    }
+)
 
 _SCAN_DIRS = [
     ".config",
@@ -33,30 +35,38 @@ _SCAN_DIRS = [
     ".local/state",
 ]
 
-_SENSITIVE_DIRS = frozenset({
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".docker",
-    ".kube",
-    ".azure",
-})
+_SENSITIVE_DIRS = frozenset(
+    {
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".docker",
+        ".kube",
+        ".azure",
+    }
+)
 
-_SENSITIVE_DIR_PATHS = frozenset({
-    ".config/gcloud",
-})
+_SENSITIVE_DIR_PATHS = frozenset(
+    {
+        ".config/gcloud",
+    }
+)
 
-_SENSITIVE_FILES = frozenset({
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-})
+_SENSITIVE_FILES = frozenset(
+    {
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+    }
+)
 
-_SENSITIVE_FILE_PATHS = frozenset({
-    ".gem/credentials",
-    ".config/gh/hosts.yml",
-    ".config/hub",
-})
+_SENSITIVE_FILE_PATHS = frozenset(
+    {
+        ".gem/credentials",
+        ".config/gh/hosts.yml",
+        ".config/hub",
+    }
+)
 
 
 @register("dotfiles")

@@ -207,17 +207,13 @@ class ShellScanner(BaseScannerPlugin):
                 self._parse_posix_line(stripped, parsed)
                 self._check_source_posix(stripped, parsed, home, seen_files)
 
-    def _check_source_posix(
-        self, line: str, parsed: _ParsedShellData, home: Path, seen_files: set[Path]
-    ) -> None:
+    def _check_source_posix(self, line: str, parsed: _ParsedShellData, home: Path, seen_files: set[Path]) -> None:
         match = _SOURCE_PATTERN.match(line)
         if not match:
             return
         self._resolve_and_track_source(match.group(1).strip("'\""), parsed, home, seen_files)
 
-    def _check_source_fish(
-        self, line: str, parsed: _ParsedShellData, home: Path, seen_files: set[Path]
-    ) -> None:
+    def _check_source_fish(self, line: str, parsed: _ParsedShellData, home: Path, seen_files: set[Path]) -> None:
         match = _FISH_SOURCE_PATTERN.match(line)
         if not match:
             return

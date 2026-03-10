@@ -347,6 +347,7 @@ class TestDisplayScanner:
 
     def test_night_shift_nested_key(self, cmd_result) -> None:
         """Test fallback for Night Shift data nested under a user key."""
+
         def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
             if "SPDisplaysDataType" in cmd:
                 return cmd_result(json.dumps({"SPDisplaysDataType": []}))

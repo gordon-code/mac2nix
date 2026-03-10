@@ -204,9 +204,7 @@ class NetworkScanner(BaseScannerPlugin):
             wifi_device = "en0"
 
         # Try preferred networks list first (gets all saved networks)
-        result = run_command(
-            ["networksetup", "-listpreferredwirelessnetworks", wifi_device]
-        )
+        result = run_command(["networksetup", "-listpreferredwirelessnetworks", wifi_device])
         if result is not None and result.returncode == 0:
             networks = []
             for line in result.stdout.splitlines():
@@ -238,9 +236,7 @@ class NetworkScanner(BaseScannerPlugin):
 
         profiles: list[VpnProfile] = []
         # Lines like: * (Connected)     UUID    "VPN Name"                     [IPSec]
-        vpn_pattern = re.compile(
-            r'^\*\s+\((\w+)\)\s+\S+\s+"([^"]+)"\s+\[(\w+)\]'
-        )
+        vpn_pattern = re.compile(r'^\*\s+\((\w+)\)\s+\S+\s+"([^"]+)"\s+\[(\w+)\]')
         for line in result.stdout.splitlines():
             match = vpn_pattern.match(line.strip())
             if match:

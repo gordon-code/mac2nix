@@ -28,29 +28,31 @@ _EXTENSION_MAP: dict[str, ConfigFileType] = {
     ".sqlite3": ConfigFileType.DATABASE,
 }
 
-_SKIP_DIRS = frozenset({
-    "Caches",
-    "Cache",
-    "Logs",
-    "logs",
-    "tmp",
-    "temp",
-    "__pycache__",
-    "node_modules",
-    ".git",
-    ".svn",
-    ".hg",
-    "DerivedData",
-    "Build",
-    ".build",
-    "IndexedDB",
-    "GPUCache",
-    "ShaderCache",
-    "Service Worker",
-    "Code Cache",
-    "CachedData",
-    "blob_storage",
-})
+_SKIP_DIRS = frozenset(
+    {
+        "Caches",
+        "Cache",
+        "Logs",
+        "logs",
+        "tmp",
+        "temp",
+        "__pycache__",
+        "node_modules",
+        ".git",
+        ".svn",
+        ".hg",
+        "DerivedData",
+        "Build",
+        ".build",
+        "IndexedDB",
+        "GPUCache",
+        "ShaderCache",
+        "Service Worker",
+        "Code Cache",
+        "CachedData",
+        "blob_storage",
+    }
+)
 
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 _MAX_FILES_PER_APP = 500

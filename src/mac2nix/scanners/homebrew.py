@@ -143,9 +143,7 @@ class HomebrewScanner(BaseScannerPlugin):
             user = entry.get("user") or None
             file_path = entry.get("file") or None
             plist_path = Path(file_path) if file_path else None
-            services.append(
-                BrewService(name=name, status=status, user=user, plist_path=plist_path)
-            )
+            services.append(BrewService(name=name, status=status, user=user, plist_path=plist_path))
         return services
 
     def _get_prefix(self) -> str | None:

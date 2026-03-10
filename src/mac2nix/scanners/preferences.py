@@ -59,9 +59,7 @@ class PreferencesScanner(BaseScannerPlugin):
 
         return PreferencesResult(domains=domains)
 
-    def _discover_cfprefsd_domains(
-        self, domains: list[PreferencesDomain], seen: set[str]
-    ) -> None:
+    def _discover_cfprefsd_domains(self, domains: list[PreferencesDomain], seen: set[str]) -> None:
         """Find domains registered in cfprefsd but without on-disk plist files."""
         result = run_command(["defaults", "domains"])
         if result is None or result.returncode != 0:

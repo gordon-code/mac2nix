@@ -199,51 +199,35 @@ class TestBinaryClassification:
         assert source == BinarySource.SYSTEM
 
     def test_brew_by_path(self) -> None:
-        source = ApplicationsScanner._classify_binary_source(
-            Path("/opt/homebrew/bin/rg")
-        )
+        source = ApplicationsScanner._classify_binary_source(Path("/opt/homebrew/bin/rg"))
         assert source == BinarySource.BREW
 
     def test_brew_by_cellar_path(self) -> None:
-        source = ApplicationsScanner._classify_binary_source(
-            Path("/opt/homebrew/Cellar/ripgrep/14.0/bin/rg")
-        )
+        source = ApplicationsScanner._classify_binary_source(Path("/opt/homebrew/Cellar/ripgrep/14.0/bin/rg"))
         assert source == BinarySource.BREW
 
     def test_cargo_source(self) -> None:
-        source = ApplicationsScanner._classify_binary_source(
-            Path("/Users/user/.cargo/bin/fd")
-        )
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.cargo/bin/fd"))
         assert source == BinarySource.CARGO
 
     def test_go_source(self) -> None:
-        source = ApplicationsScanner._classify_binary_source(
-            Path("/Users/user/go/bin/golangci-lint")
-        )
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/go/bin/golangci-lint"))
         assert source == BinarySource.GO
 
     def test_pipx_source(self) -> None:
-        source = ApplicationsScanner._classify_binary_source(
-            Path("/Users/user/.local/bin/black")
-        )
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.local/bin/black"))
         assert source == BinarySource.PIPX
 
     def test_npm_source(self) -> None:
-        source = ApplicationsScanner._classify_binary_source(
-            Path("/Users/user/.npm/bin/eslint")
-        )
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.npm/bin/eslint"))
         assert source == BinarySource.NPM
 
     def test_gem_source(self) -> None:
-        source = ApplicationsScanner._classify_binary_source(
-            Path("/Users/user/.gem/ruby/3.2.0/bin/rubocop")
-        )
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.gem/ruby/3.2.0/bin/rubocop"))
         assert source == BinarySource.GEM
 
     def test_unknown_defaults_manual(self) -> None:
-        source = ApplicationsScanner._classify_binary_source(
-            Path("/some/random/path/tool")
-        )
+        source = ApplicationsScanner._classify_binary_source(Path("/some/random/path/tool"))
         assert source == BinarySource.MANUAL
 
 

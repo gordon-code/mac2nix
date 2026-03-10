@@ -147,19 +147,35 @@ class SecurityScanner(BaseScannerPlugin):
 
     def _get_custom_certificates(self) -> list[str]:
         """Discover custom/corporate certificates in System keychain."""
-        result = run_command(
-            ["security", "find-certificate", "-a", "/Library/Keychains/System.keychain"]
-        )
+        result = run_command(["security", "find-certificate", "-a", "/Library/Keychains/System.keychain"])
         if result is None or result.returncode != 0:
             return []
 
         # Well-known CA issuers to filter out
-        known_cas = frozenset({
-            "apple", "digicert", "verisign", "entrust", "globalsign", "comodo",
-            "geotrust", "thawte", "symantec", "godaddy", "letsencrypt",
-            "usertrust", "sectigo", "baltimore", "cybertrust", "certum",
-            "starfield", "amazontrust", "microsoftroot", "microsoft",
-        })
+        known_cas = frozenset(
+            {
+                "apple",
+                "digicert",
+                "verisign",
+                "entrust",
+                "globalsign",
+                "comodo",
+                "geotrust",
+                "thawte",
+                "symantec",
+                "godaddy",
+                "letsencrypt",
+                "usertrust",
+                "sectigo",
+                "baltimore",
+                "cybertrust",
+                "certum",
+                "starfield",
+                "amazontrust",
+                "microsoftroot",
+                "microsoft",
+            }
+        )
 
         certificates: list[str] = []
         cert_name_pattern = re.compile(r'"labl"<blob>="(.+)"')

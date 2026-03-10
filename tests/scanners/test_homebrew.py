@@ -40,10 +40,10 @@ class TestHomebrewScanner:
     def _scan_side_effects(self, cmd_result, brewfile=_BREWFILE, versions=_VERSIONS):
         """Build side_effect list for all 5 run_command calls in scan()."""
         return [
-            cmd_result(brewfile),   # brew bundle dump
-            cmd_result(versions),   # brew list --versions
-            cmd_result(""),         # brew list --pinned
-            cmd_result("[]"),       # brew services list --json
+            cmd_result(brewfile),  # brew bundle dump
+            cmd_result(versions),  # brew list --versions
+            cmd_result(""),  # brew list --pinned
+            cmd_result("[]"),  # brew services list --json
             cmd_result("/opt/homebrew"),  # brew --prefix
         ]
 
@@ -150,12 +150,18 @@ class TestHomebrewScanner:
         assert git_formula.pinned is False
 
     def test_services_parsing(self, cmd_result) -> None:
-        services_json = json.dumps([
-            {"name": "mysql", "status": "started", "user": "wgordon",
-             "file": "/opt/homebrew/opt/mysql/homebrew.mysql.plist", "exit_code": None},
-            {"name": "redis", "status": "stopped", "user": None,
-             "file": None, "exit_code": None},
-        ])
+        services_json = json.dumps(
+            [
+                {
+                    "name": "mysql",
+                    "status": "started",
+                    "user": "wgordon",
+                    "file": "/opt/homebrew/opt/mysql/homebrew.mysql.plist",
+                    "exit_code": None,
+                },
+                {"name": "redis", "status": "stopped", "user": None, "file": None, "exit_code": None},
+            ]
+        )
         side_effects = [
             cmd_result(_BREWFILE),
             cmd_result(_VERSIONS),
@@ -242,10 +248,11 @@ class TestHomebrewScanner:
         assert result.prefix is None
 
     def test_services_null_user_file(self, cmd_result) -> None:
-        services_json = json.dumps([
-            {"name": "dnsmasq", "status": "started", "user": None,
-             "file": None, "exit_code": None},
-        ])
+        services_json = json.dumps(
+            [
+                {"name": "dnsmasq", "status": "started", "user": None, "file": None, "exit_code": None},
+            ]
+        )
         side_effects = [
             cmd_result(_BREWFILE),
             cmd_result(_VERSIONS),

@@ -348,12 +348,7 @@ class TestNetworkScanner:
         assert result.current_location == "Work"
 
     def test_wifi_preferred_networks(self, cmd_result) -> None:
-        preferred = (
-            "Preferred networks on en0:\n"
-            "\tHomeNetwork\n"
-            "\tOfficeWifi\n"
-            "\tCoffeeShop\n"
-        )
+        preferred = "Preferred networks on en0:\n\tHomeNetwork\n\tOfficeWifi\n\tCoffeeShop\n"
         responses = {
             ("networksetup", "-listallhardwareports"): cmd_result(
                 "Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa:bb:cc:dd:ee:ff\n"

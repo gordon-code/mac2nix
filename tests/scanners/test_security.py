@@ -326,9 +326,7 @@ class TestSecurityScanner:
 
     def test_custom_certificates_no_custom(self, cmd_result) -> None:
         cert_output = (
-            '"labl"<blob>="DigiCert Global Root G2"\n'
-            '"labl"<blob>="Apple Root CA"\n'
-            '"labl"<blob>="VeriSign Class 3"\n'
+            '"labl"<blob>="DigiCert Global Root G2"\n"labl"<blob>="Apple Root CA"\n"labl"<blob>="VeriSign Class 3"\n'
         )
 
         def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
