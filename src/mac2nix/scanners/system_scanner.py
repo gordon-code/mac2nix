@@ -1,13 +1,16 @@
-"""System scanner — reads hostname, timezone, locale, power settings, and Spotlight."""
+"""System scanner — reads hostname, timezone, locale, power settings, Spotlight, and system info."""
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-from mac2nix.models.system import SystemConfig
-from mac2nix.scanners._utils import run_command
+from mac2nix.models.system import PrinterInfo, SystemConfig, TimeMachineConfig
+from mac2nix.scanners._utils import read_plist_safe, run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
@@ -26,17 +29,48 @@ class SystemScanner(BaseScannerPlugin):
 
     def scan(self) -> SystemConfig:
         hostname = self._get_hostname()
+        local_hostname, dns_hostname = self._get_additional_hostnames()
         timezone = self._get_timezone()
         locale = self._get_locale()
         power_settings = self._get_power_settings()
         spotlight_indexing = self._get_spotlight_status()
+        macos_version, macos_build, macos_product_name = self._get_macos_version()
+        hw_model, hw_chip, hw_memory, hw_serial = self._get_hardware_info()
+        time_machine = self._get_time_machine()
+        software_update = self._get_software_update()
+        sleep_settings = self._get_sleep_settings()
+        login_window = self._get_login_window()
+        startup_chime = self._get_startup_chime()
+        ntp_enabled, ntp_server = self._get_network_time()
+        printers = self._get_printers()
+        remote_login, screen_sharing, file_sharing = self._get_remote_access()
 
         return SystemConfig(
             hostname=hostname,
+            local_hostname=local_hostname,
+            dns_hostname=dns_hostname,
             timezone=timezone,
             locale=locale,
             power_settings=power_settings,
             spotlight_indexing=spotlight_indexing,
+            macos_version=macos_version,
+            macos_build=macos_build,
+            macos_product_name=macos_product_name,
+            hardware_model=hw_model,
+            hardware_chip=hw_chip,
+            hardware_memory=hw_memory,
+            hardware_serial=hw_serial,
+            time_machine=time_machine,
+            software_update=software_update,
+            sleep_settings=sleep_settings,
+            login_window=login_window,
+            startup_chime=startup_chime,
+            network_time_enabled=ntp_enabled,
+            network_time_server=ntp_server,
+            printers=printers,
+            remote_login=remote_login,
+            screen_sharing=screen_sharing,
+            file_sharing=file_sharing,
         )
 
     def _get_hostname(self) -> str:
@@ -104,3 +138,262 @@ class SystemScanner(BaseScannerPlugin):
         if result is None or result.returncode != 0:
             return None
         return "enabled" in result.stdout.lower()
+
+    def _get_macos_version(self) -> tuple[str | None, str | None, str | None]:
+        """Parse sw_vers output for macOS version info."""
+        result = run_command(["sw_vers"])
+        if result is None or result.returncode != 0:
+            return None, None, None
+
+        version: str | None = None
+        build: str | None = None
+        product_name: str | None = None
+
+        for line in result.stdout.splitlines():
+            if "ProductName:" in line:
+                product_name = line.split(":", 1)[1].strip()
+            elif "ProductVersion:" in line:
+                version = line.split(":", 1)[1].strip()
+            elif "BuildVersion:" in line:
+                build = line.split(":", 1)[1].strip()
+
+        return version, build, product_name
+
+    def _get_hardware_info(
+        self,
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        """Parse system_profiler SPHardwareDataType for hardware info."""
+        result = run_command(
+            ["system_profiler", "SPHardwareDataType", "-json"], timeout=15
+        )
+        if result is None or result.returncode != 0:
+            return None, None, None, None
+
+        try:
+            data = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return None, None, None, None
+
+        hw_list = data.get("SPHardwareDataType", [])
+        if not hw_list:
+            return None, None, None, None
+
+        hw = hw_list[0]
+        model = hw.get("machine_model") or hw.get("machine_name")
+        chip = hw.get("chip_type") or hw.get("cpu_type")
+        memory = hw.get("physical_memory")
+        serial = hw.get("serial_number")
+
+        return model, chip, memory, serial
+
+    def _get_additional_hostnames(self) -> tuple[str | None, str | None]:
+        """Get LocalHostName and HostName separately."""
+        local_hostname: str | None = None
+        dns_hostname: str | None = None
+
+        result = run_command(["scutil", "--get", "LocalHostName"])
+        if result is not None and result.returncode == 0:
+            local_hostname = result.stdout.strip() or None
+
+        result = run_command(["scutil", "--get", "HostName"])
+        if result is not None and result.returncode == 0:
+            dns_hostname = result.stdout.strip() or None
+
+        return local_hostname, dns_hostname
+
+    def _get_time_machine(self) -> TimeMachineConfig | None:
+        """Get Time Machine backup configuration."""
+        result = run_command(["tmutil", "destinationinfo"])
+        if result is None or result.returncode != 0:
+            return None
+
+        dest_name: str | None = None
+        dest_id: str | None = None
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Name"):
+                dest_name = stripped.split(":", 1)[1].strip() if ":" in stripped else None
+            elif stripped.startswith("ID"):
+                dest_id = stripped.split(":", 1)[1].strip() if ":" in stripped else None
+
+        if dest_name is None and dest_id is None:
+            return TimeMachineConfig(configured=False)
+
+        latest_backup: datetime | None = None
+        result = run_command(["tmutil", "latestbackup"])
+        if result is not None and result.returncode == 0:
+            backup_path = result.stdout.strip()
+            if backup_path:
+                # Extract timestamp from path like /Volumes/.../2026-03-09-123456
+                parts = backup_path.rstrip("/").rsplit("/", 1)
+                date_str = parts[-1] if parts else ""
+                try:
+                    latest_backup = datetime.strptime(date_str, "%Y-%m-%d-%H%M%S").replace(tzinfo=UTC)
+                except ValueError:
+                    logger.debug("Could not parse TM backup date: %s", date_str)
+
+        return TimeMachineConfig(
+            configured=True,
+            destination_name=dest_name,
+            destination_id=dest_id,
+            latest_backup=latest_backup,
+        )
+
+    def _get_software_update(self) -> dict[str, Any]:
+        """Read software update preferences."""
+        plist_path = Path("/Library/Preferences/com.apple.SoftwareUpdate.plist")
+        data = read_plist_safe(plist_path)
+        if data is None:
+            return {}
+        # Extract known keys of interest
+        keys = [
+            "AutomaticCheckEnabled",
+            "AutomaticDownload",
+            "AutomaticallyInstallMacOSUpdates",
+            "CriticalUpdateInstall",
+        ]
+        return {k: data[k] for k in keys if k in data}
+
+    def _get_sleep_settings(self) -> dict[str, str | int | None]:
+        """Read sleep-related systemsetup values."""
+        settings: dict[str, str | int | None] = {}
+        commands = {
+            "computer_sleep": "-getcomputersleep",
+            "display_sleep": "-getdisplaysleep",
+            "hard_disk_sleep": "-getharddisksleep",
+            "wake_on_network": "-getwakeonnetworkaccess",
+            "restart_freeze": "-getrestartfreeze",
+            "restart_power_failure": "-getrestartpowerfailure",
+        }
+        for key, flag in commands.items():
+            result = run_command(["systemsetup", flag])
+            if result is None or result.returncode != 0:
+                continue
+            output = result.stdout.strip()
+            # Parse "Computer Sleep: 10" or "Wake On Network Access: On"
+            if ":" in output:
+                value = output.split(":", 1)[1].strip()
+                # Try to parse as int (sleep minutes)
+                try:
+                    settings[key] = int(value)
+                except ValueError:
+                    settings[key] = value
+
+        return settings
+
+    def _get_login_window(self) -> dict[str, Any]:
+        """Read login window preferences."""
+        plist_path = Path("/Library/Preferences/com.apple.loginwindow.plist")
+        data = read_plist_safe(plist_path)
+        if data is None:
+            return {}
+        keys = [
+            "autoLoginUser",
+            "GuestEnabled",
+            "SHOWFULLNAME",
+            "RestartDisabled",
+            "ShutDownDisabled",
+            "SleepDisabled",
+            "DisableConsoleAccess",
+            "AdminHostInfo",
+            "LoginwindowText",
+        ]
+        return {k: data[k] for k in keys if k in data}
+
+    def _get_startup_chime(self) -> bool | None:
+        """Check startup chime setting via nvram."""
+        result = run_command(["nvram", "SystemAudioVolume"])
+        if result is None or result.returncode != 0:
+            # Missing/error typically means chime is on (default)
+            return None
+        # Output: "SystemAudioVolume\t%00" or "SystemAudioVolume\t%80"
+        output = result.stdout.strip()
+        return "%00" not in output and "%01" not in output
+
+    def _get_network_time(self) -> tuple[bool | None, str | None]:
+        """Get NTP enabled status and server."""
+        ntp_enabled: bool | None = None
+        ntp_server: str | None = None
+
+        result = run_command(["systemsetup", "-getusingnetworktime"])
+        if result is not None and result.returncode == 0:
+            output = result.stdout.strip()
+            if ":" in output:
+                value = output.split(":", 1)[1].strip()
+                ntp_enabled = value.lower() == "on"
+
+        result = run_command(["systemsetup", "-getnetworktimeserver"])
+        if result is not None and result.returncode == 0:
+            output = result.stdout.strip()
+            if ":" in output:
+                ntp_server = output.split(":", 1)[1].strip() or None
+
+        return ntp_enabled, ntp_server
+
+    def _get_printers(self) -> list[PrinterInfo]:
+        """Discover installed printers."""
+        result = run_command(["lpstat", "-a"])
+        if result is None or result.returncode != 0:
+            return []
+
+        printer_names: list[str] = []
+        for line in result.stdout.splitlines():
+            # "PrinterName accepting requests since ..."
+            parts = line.split()
+            if parts:
+                printer_names.append(parts[0])
+
+        if not printer_names:
+            return []
+
+        # Get default printer
+        default_name: str | None = None
+        result = run_command(["lpstat", "-d"])
+        if result is not None and result.returncode == 0:
+            output = result.stdout.strip()
+            if ":" in output:
+                default_name = output.split(":", 1)[1].strip()
+
+        printers: list[PrinterInfo] = []
+        for name in printer_names:
+            options: dict[str, str] = {}
+            result = run_command(["lpoptions", "-d", name, "-l"])
+            if result is not None and result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if "/" in line and ":" in line:
+                        opt_key = line.split("/")[0].strip()
+                        opt_val = line.split(":", 1)[1].strip() if ":" in line else ""
+                        # Find the selected value (marked with *)
+                        for part in opt_val.split():
+                            if part.startswith("*"):
+                                options[opt_key] = part.lstrip("*")
+                                break
+            printers.append(
+                PrinterInfo(
+                    name=name,
+                    is_default=(name == default_name),
+                    options=options,
+                )
+            )
+
+        return printers
+
+    def _get_remote_access(self) -> tuple[bool | None, bool | None, bool | None]:
+        """Check SSH, Screen Sharing, and File Sharing status."""
+        remote_login: bool | None = None
+        screen_sharing: bool | None = None
+        file_sharing: bool | None = None
+
+        result = run_command(["systemsetup", "-getremotelogin"])
+        if result is not None and result.returncode == 0:
+            remote_login = "on" in result.stdout.lower()
+
+        result = run_command(["launchctl", "list", "com.apple.screensharing"])
+        if result is not None:
+            screen_sharing = result.returncode == 0
+
+        result = run_command(["launchctl", "list", "com.apple.smbd"])
+        if result is not None:
+            file_sharing = result.returncode == 0
+
+        return remote_login, screen_sharing, file_sharing

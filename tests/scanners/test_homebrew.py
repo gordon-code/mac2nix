@@ -1,5 +1,6 @@
 """Tests for Homebrew scanner."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 from mac2nix.models.application import HomebrewState
@@ -35,10 +36,20 @@ class TestHomebrewScanner:
         with patch("mac2nix.scanners.homebrew.shutil.which", return_value=None):
             assert HomebrewScanner().is_available() is False
 
+    def _scan_side_effects(self, cmd_result, brewfile=_BREWFILE, versions=_VERSIONS):
+        """Build side_effect list for all 5 run_command calls in scan()."""
+        return [
+            cmd_result(brewfile),   # brew bundle dump
+            cmd_result(versions),   # brew list --versions
+            cmd_result(""),         # brew list --pinned
+            cmd_result(""),         # brew services list
+            cmd_result("/opt/homebrew"),  # brew --prefix
+        ]
+
     def test_parses_taps(self, cmd_result) -> None:
         with patch(
             "mac2nix.scanners.homebrew.run_command",
-            side_effect=[cmd_result(_BREWFILE), cmd_result(_VERSIONS)],
+            side_effect=self._scan_side_effects(cmd_result),
         ):
             result = HomebrewScanner().scan()
 
@@ -49,7 +60,7 @@ class TestHomebrewScanner:
     def test_parses_formulae(self, cmd_result) -> None:
         with patch(
             "mac2nix.scanners.homebrew.run_command",
-            side_effect=[cmd_result(_BREWFILE), cmd_result(_VERSIONS)],
+            side_effect=self._scan_side_effects(cmd_result),
         ):
             result = HomebrewScanner().scan()
 
@@ -61,7 +72,7 @@ class TestHomebrewScanner:
     def test_parses_casks(self, cmd_result) -> None:
         with patch(
             "mac2nix.scanners.homebrew.run_command",
-            side_effect=[cmd_result(_BREWFILE), cmd_result(_VERSIONS)],
+            side_effect=self._scan_side_effects(cmd_result),
         ):
             result = HomebrewScanner().scan()
 
@@ -73,7 +84,7 @@ class TestHomebrewScanner:
     def test_parses_mas_apps(self, cmd_result) -> None:
         with patch(
             "mac2nix.scanners.homebrew.run_command",
-            side_effect=[cmd_result(_BREWFILE), cmd_result(_VERSIONS)],
+            side_effect=self._scan_side_effects(cmd_result),
         ):
             result = HomebrewScanner().scan()
 
@@ -85,7 +96,7 @@ class TestHomebrewScanner:
     def test_version_enrichment(self, cmd_result) -> None:
         with patch(
             "mac2nix.scanners.homebrew.run_command",
-            side_effect=[cmd_result(_BREWFILE), cmd_result(_VERSIONS)],
+            side_effect=self._scan_side_effects(cmd_result),
         ):
             result = HomebrewScanner().scan()
 
@@ -111,9 +122,143 @@ class TestHomebrewScanner:
         brewfile = '# Comment line\n\ntap "homebrew/core"\n'
         with patch(
             "mac2nix.scanners.homebrew.run_command",
-            side_effect=[cmd_result(brewfile), cmd_result("")],
+            side_effect=self._scan_side_effects(cmd_result, brewfile=brewfile, versions=""),
         ):
             result = HomebrewScanner().scan()
 
         assert isinstance(result, HomebrewState)
         assert result.taps == ["homebrew/core"]
+
+    def test_pinned_formulae(self, cmd_result) -> None:
+        pinned_output = "node\nnginx\n"
+        side_effects = [
+            cmd_result(_BREWFILE),
+            cmd_result(_VERSIONS),
+            cmd_result(pinned_output),
+            cmd_result(""),
+            cmd_result("/opt/homebrew"),
+        ]
+        with patch(
+            "mac2nix.scanners.homebrew.run_command",
+            side_effect=side_effects,
+        ):
+            result = HomebrewScanner().scan()
+
+        assert isinstance(result, HomebrewState)
+        git_formula = next(f for f in result.formulae if f.name == "git")
+        assert git_formula.pinned is False
+
+    def test_services_parsing(self, cmd_result) -> None:
+        services_output = (
+            "Name    Status  User    File\n"
+            "mysql   started wgordon /opt/homebrew/opt/mysql/homebrew.mysql.plist\n"
+            "redis   stopped\n"
+        )
+        side_effects = [
+            cmd_result(_BREWFILE),
+            cmd_result(_VERSIONS),
+            cmd_result(""),
+            cmd_result(services_output),
+            cmd_result("/opt/homebrew"),
+        ]
+        with patch(
+            "mac2nix.scanners.homebrew.run_command",
+            side_effect=side_effects,
+        ):
+            result = HomebrewScanner().scan()
+
+        assert isinstance(result, HomebrewState)
+        assert len(result.services) == 2
+        mysql = next(s for s in result.services if s.name == "mysql")
+        assert mysql.status == "started"
+        assert mysql.user == "wgordon"
+        assert mysql.plist_path == Path("/opt/homebrew/opt/mysql/homebrew.mysql.plist")
+        redis = next(s for s in result.services if s.name == "redis")
+        assert redis.status == "stopped"
+        assert redis.user is None
+        assert redis.plist_path is None
+
+    def test_services_header_skipped(self, cmd_result) -> None:
+        services_output = "Name    Status  User    File\n"
+        side_effects = [
+            cmd_result(_BREWFILE),
+            cmd_result(_VERSIONS),
+            cmd_result(""),
+            cmd_result(services_output),
+            cmd_result("/opt/homebrew"),
+        ]
+        with patch(
+            "mac2nix.scanners.homebrew.run_command",
+            side_effect=side_effects,
+        ):
+            result = HomebrewScanner().scan()
+
+        assert isinstance(result, HomebrewState)
+        assert result.services == []
+
+    def test_prefix_detected(self, cmd_result) -> None:
+        side_effects = [
+            cmd_result(_BREWFILE),
+            cmd_result(_VERSIONS),
+            cmd_result(""),
+            cmd_result(""),
+            cmd_result("/opt/homebrew\n"),
+        ]
+        with patch(
+            "mac2nix.scanners.homebrew.run_command",
+            side_effect=side_effects,
+        ):
+            result = HomebrewScanner().scan()
+
+        assert isinstance(result, HomebrewState)
+        assert result.prefix == "/opt/homebrew"
+
+    def test_prefix_intel(self, cmd_result) -> None:
+        side_effects = [
+            cmd_result(_BREWFILE),
+            cmd_result(_VERSIONS),
+            cmd_result(""),
+            cmd_result(""),
+            cmd_result("/usr/local\n"),
+        ]
+        with patch(
+            "mac2nix.scanners.homebrew.run_command",
+            side_effect=side_effects,
+        ):
+            result = HomebrewScanner().scan()
+
+        assert isinstance(result, HomebrewState)
+        assert result.prefix == "/usr/local"
+
+    def test_prefix_command_fails(self) -> None:
+        with patch(
+            "mac2nix.scanners.homebrew.run_command",
+            return_value=None,
+        ):
+            result = HomebrewScanner().scan()
+
+        assert isinstance(result, HomebrewState)
+        assert result.prefix is None
+
+    def test_services_none_user_plist(self, cmd_result) -> None:
+        services_output = (
+            "Name    Status  User    File\n"
+            "dnsmasq started none    none\n"
+        )
+        side_effects = [
+            cmd_result(_BREWFILE),
+            cmd_result(_VERSIONS),
+            cmd_result(""),
+            cmd_result(services_output),
+            cmd_result("/opt/homebrew"),
+        ]
+        with patch(
+            "mac2nix.scanners.homebrew.run_command",
+            side_effect=side_effects,
+        ):
+            result = HomebrewScanner().scan()
+
+        assert isinstance(result, HomebrewState)
+        assert len(result.services) == 1
+        assert result.services[0].user is None
+        assert result.services[0].plist_path is None

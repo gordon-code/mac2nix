@@ -100,6 +100,48 @@ class TestFontsScanner:
         assert isinstance(result, FontsResult)
         assert result.entries == []
 
+    def test_font_collections(self, tmp_path: Path) -> None:
+        collections_dir = tmp_path / "Library" / "FontCollections"
+        collections_dir.mkdir(parents=True)
+        (collections_dir / "MyFavorites.collection").write_bytes(b"data")
+        (collections_dir / "CodeFonts.collection").write_bytes(b"data")
+        (collections_dir / "readme.txt").write_text("not a collection")
+
+        with (
+            patch("mac2nix.scanners.fonts._FONT_DIRS", []),
+            patch("mac2nix.scanners.fonts.Path.home", return_value=tmp_path),
+        ):
+            result = FontsScanner().scan()
+
+        assert isinstance(result, FontsResult)
+        assert len(result.collections) == 2
+        names = {c.name for c in result.collections}
+        assert "MyFavorites" in names
+        assert "CodeFonts" in names
+
+    def test_font_collections_empty(self, tmp_path: Path) -> None:
+        collections_dir = tmp_path / "Library" / "FontCollections"
+        collections_dir.mkdir(parents=True)
+
+        with (
+            patch("mac2nix.scanners.fonts._FONT_DIRS", []),
+            patch("mac2nix.scanners.fonts.Path.home", return_value=tmp_path),
+        ):
+            result = FontsScanner().scan()
+
+        assert isinstance(result, FontsResult)
+        assert result.collections == []
+
+    def test_font_collections_no_dir(self, tmp_path: Path) -> None:
+        with (
+            patch("mac2nix.scanners.fonts._FONT_DIRS", []),
+            patch("mac2nix.scanners.fonts.Path.home", return_value=tmp_path),
+        ):
+            result = FontsScanner().scan()
+
+        assert isinstance(result, FontsResult)
+        assert result.collections == []
+
     def test_returns_fonts_result(self) -> None:
         with patch("mac2nix.scanners.fonts._FONT_DIRS", []):
             result = FontsScanner().scan()

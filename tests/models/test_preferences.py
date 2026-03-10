@@ -27,6 +27,36 @@ class TestPreferencesDomain:
         assert domain.keys["persistent-apps"] == ["Safari", "Terminal"]
         assert domain.keys["window-settings"] == {"alpha": 0.9}
 
+    def test_source_path_optional(self):
+        domain = PreferencesDomain(
+            domain_name="com.apple.dock",
+            keys={"autohide": True},
+        )
+        assert domain.source_path is None
+
+    def test_source_path_with_value(self):
+        domain = PreferencesDomain(
+            domain_name="com.apple.dock",
+            source_path=Path("~/Library/Preferences/com.apple.dock.plist"),
+            keys={"autohide": True},
+        )
+        assert domain.source_path == Path("~/Library/Preferences/com.apple.dock.plist")
+
+    def test_source_default_is_disk(self):
+        domain = PreferencesDomain(
+            domain_name="com.apple.dock",
+            keys={"autohide": True},
+        )
+        assert domain.source == "disk"
+
+    def test_source_custom_value(self):
+        domain = PreferencesDomain(
+            domain_name="com.apple.dock",
+            source="cfprefsd",
+            keys={"autohide": True},
+        )
+        assert domain.source == "cfprefsd"
+
 
 class TestPreferencesResult:
     def test_multiple_domains(self):

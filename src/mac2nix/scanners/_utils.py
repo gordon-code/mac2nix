@@ -23,13 +23,15 @@ LAUNCHD_DIRS: list[tuple[Path, str]] = [
 
 
 def _convert_datetimes(obj: Any) -> Any:
-    """Recursively convert datetime values to ISO 8601 strings.
+    """Recursively convert non-JSON-safe plist values.
 
-    plistlib returns datetime objects for NSDate values, but PreferenceValue
-    does not include datetime in its union type.
+    plistlib returns datetime objects (for NSDate) and bytes objects (for NSData)
+    that are not JSON-serializable. Convert them to strings.
     """
     if isinstance(obj, datetime):
         return obj.isoformat()
+    if isinstance(obj, bytes):
+        return f"<data:{len(obj)} bytes>"
     if isinstance(obj, dict):
         return {k: _convert_datetimes(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -79,7 +81,7 @@ def read_plist_safe(path: Path) -> dict[str, Any] | None:
             logger.warning("Permission denied reading plist: %s", path)
         return None
     except plistlib.InvalidFileException:
-        logger.debug("Invalid plist file: %s", path)
+        logger.warning("Invalid plist file: %s", path)
         return None
     except (ValueError, OverflowError):
         # plistlib can't handle dates like year 0 (Apple's "no date" sentinel).

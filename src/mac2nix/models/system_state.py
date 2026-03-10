@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from mac2nix.models.application import ApplicationsResult, HomebrewState
-from mac2nix.models.files import AppConfigResult, DotfilesResult, FontsResult
+from mac2nix.models.files import AppConfigResult, DotfilesResult, FontsResult, LibraryAuditResult
 from mac2nix.models.hardware import AudioConfig, DisplayConfig
 from mac2nix.models.preferences import PreferencesResult
 from mac2nix.models.services import LaunchAgentsResult, ScheduledTasks, ShellConfig
@@ -41,6 +41,7 @@ class SystemState(BaseModel):
     display: DisplayConfig | None = None
     audio: AudioConfig | None = None
     cron: ScheduledTasks | None = None
+    library_audit: LibraryAuditResult | None = None
 
     def to_json(self, path: Path | None = None) -> str:
         """Serialize to JSON string. Optionally write to file."""

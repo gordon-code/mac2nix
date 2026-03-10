@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -21,6 +22,8 @@ _SOURCE_MAP: dict[str, LaunchAgentSource] = {
     "system": LaunchAgentSource.SYSTEM,
     "daemon": LaunchAgentSource.DAEMON,
 }
+
+_SENSITIVE_ENV_PATTERNS = {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"}
 
 
 @register("launch_agents")
@@ -60,6 +63,22 @@ class LaunchAgentsScanner(BaseScannerPlugin):
         program_arguments = data.get("ProgramArguments", [])
         run_at_load = data.get("RunAtLoad", False)
 
+        # Deep copy data for raw_plist to avoid mutating the shared cache
+        raw_plist = copy.deepcopy(data)
+        # Redact sensitive environment variables in raw_plist
+        self._redact_sensitive_env(raw_plist)
+
+        # Extract filtered environment variables
+        env_vars = data.get("EnvironmentVariables")
+        filtered_env: dict[str, str] | None = None
+        if isinstance(env_vars, dict):
+            filtered_env = {}
+            for key, val in env_vars.items():
+                if any(p in key.upper() for p in _SENSITIVE_ENV_PATTERNS):
+                    filtered_env[key] = "***REDACTED***"
+                else:
+                    filtered_env[key] = str(val)
+
         return LaunchAgentEntry(
             label=label,
             program=program,
@@ -67,7 +86,32 @@ class LaunchAgentsScanner(BaseScannerPlugin):
             run_at_load=run_at_load,
             source=source,
             plist_path=plist_path,
+            raw_plist=raw_plist,
+            working_directory=data.get("WorkingDirectory"),
+            environment_variables=filtered_env,
+            keep_alive=data.get("KeepAlive"),
+            start_interval=data.get("StartInterval"),
+            start_calendar_interval=data.get("StartCalendarInterval"),
+            watch_paths=data.get("WatchPaths", []),
+            queue_directories=data.get("QueueDirectories", []),
+            stdout_path=data.get("StandardOutPath"),
+            stderr_path=data.get("StandardErrorPath"),
+            throttle_interval=data.get("ThrottleInterval"),
+            process_type=data.get("ProcessType"),
+            nice=data.get("Nice"),
+            user_name=data.get("UserName"),
+            group_name=data.get("GroupName"),
         )
+
+    @staticmethod
+    def _redact_sensitive_env(plist: dict[str, Any]) -> None:
+        """Redact sensitive keys from EnvironmentVariables in the plist dict."""
+        env_vars = plist.get("EnvironmentVariables")
+        if not isinstance(env_vars, dict):
+            return
+        for key in list(env_vars.keys()):
+            if any(p in key.upper() for p in _SENSITIVE_ENV_PATTERNS):
+                env_vars[key] = "***REDACTED***"
 
     def _get_login_items(self) -> list[LaunchAgentEntry]:
         """Parse login items from sfltool dumpbtm text output.

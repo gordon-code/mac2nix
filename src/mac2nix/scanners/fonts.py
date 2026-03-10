@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from mac2nix.models.files import FontEntry, FontSource, FontsResult
+from mac2nix.models.files import FontCollection, FontEntry, FontSource, FontsResult
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
@@ -45,4 +45,19 @@ class FontsScanner(BaseScannerPlugin):
                         )
                     )
 
-        return FontsResult(entries=entries)
+        collections = self._get_font_collections()
+        return FontsResult(entries=entries, collections=collections)
+
+    def _get_font_collections(self) -> list[FontCollection]:
+        """Scan ~/Library/FontCollections/ for font collection files."""
+        collections_dir = Path.home() / "Library" / "FontCollections"
+        if not collections_dir.is_dir():
+            return []
+        collections: list[FontCollection] = []
+        try:
+            for path in sorted(collections_dir.iterdir()):
+                if path.is_file() and path.suffix.lower() == ".collection":
+                    collections.append(FontCollection(name=path.stem, path=path))
+        except PermissionError:
+            logger.warning("Permission denied reading font collections: %s", collections_dir)
+        return collections

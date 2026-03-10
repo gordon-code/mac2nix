@@ -197,3 +197,171 @@ class TestLaunchAgentsScanner:
             result = LaunchAgentsScanner().scan()
 
         assert isinstance(result, LaunchAgentsResult)
+
+    def test_full_plist_fields_extracted(self) -> None:
+        plist_path = Path("/Users/test/Library/LaunchAgents/com.test.full.plist")
+        plist_data = {
+            "Label": "com.test.full",
+            "Program": "/usr/bin/test",
+            "ProgramArguments": ["/usr/bin/test", "--verbose"],
+            "RunAtLoad": True,
+            "WorkingDirectory": "/var/run/test",
+            "EnvironmentVariables": {"HOME": "/Users/test", "LANG": "en_US.UTF-8"},
+            "KeepAlive": {"SuccessfulExit": False},
+            "StartInterval": 3600,
+            "StartCalendarInterval": {"Hour": 5, "Minute": 0},
+            "WatchPaths": ["/var/log/system.log"],
+            "QueueDirectories": ["/var/spool/test"],
+            "StandardOutPath": "/var/log/test.out.log",
+            "StandardErrorPath": "/var/log/test.err.log",
+            "ThrottleInterval": 10,
+            "ProcessType": "Background",
+            "Nice": 5,
+            "UserName": "root",
+            "GroupName": "wheel",
+        }
+
+        with (
+            patch(
+                "mac2nix.scanners.launch_agents.read_launchd_plists",
+                return_value=[(plist_path, "user", plist_data)],
+            ),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        assert isinstance(result, LaunchAgentsResult)
+        assert len(result.entries) == 1
+        entry = result.entries[0]
+        assert entry.working_directory == "/var/run/test"
+        assert entry.environment_variables == {"HOME": "/Users/test", "LANG": "en_US.UTF-8"}
+        assert entry.keep_alive == {"SuccessfulExit": False}
+        assert entry.start_interval == 3600
+        assert entry.start_calendar_interval == {"Hour": 5, "Minute": 0}
+        assert entry.watch_paths == ["/var/log/system.log"]
+        assert entry.queue_directories == ["/var/spool/test"]
+        assert entry.stdout_path == "/var/log/test.out.log"
+        assert entry.stderr_path == "/var/log/test.err.log"
+        assert entry.throttle_interval == 10
+        assert entry.process_type == "Background"
+        assert entry.nice == 5
+        assert entry.user_name == "root"
+        assert entry.group_name == "wheel"
+
+    def test_sensitive_env_vars_redacted(self) -> None:
+        plist_path = Path("/Users/test/Library/LaunchAgents/com.test.secrets.plist")
+        redacted = "***REDACTED***"
+        plist_data = {
+            "Label": "com.test.secrets",
+            "EnvironmentVariables": {
+                "HOME": "/Users/test",
+                "API_KEY": "super_secret_123",
+                "GH_TOKEN": "ghp_abc",
+                "DB_PASSWORD": "hunter2",
+                "NORMAL_VAR": "safe_value",
+                "MY_AUTH_HEADER": "Bearer abc",
+            },
+        }
+
+        with (
+            patch(
+                "mac2nix.scanners.launch_agents.read_launchd_plists",
+                return_value=[(plist_path, "user", plist_data)],
+            ),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        entry = result.entries[0]
+        assert entry.environment_variables["HOME"] == "/Users/test"
+        assert entry.environment_variables["NORMAL_VAR"] == "safe_value"
+        assert entry.environment_variables["API_KEY"] == redacted
+        assert entry.environment_variables["GH_TOKEN"] == redacted
+        assert entry.environment_variables["DB_PASSWORD"] == redacted
+        assert entry.environment_variables["MY_AUTH_HEADER"] == redacted
+
+    def test_raw_plist_env_also_redacted(self) -> None:
+        plist_path = Path("/Users/test/Library/LaunchAgents/com.test.raw.plist")
+        redacted = "***REDACTED***"
+        plist_data = {
+            "Label": "com.test.raw",
+            "EnvironmentVariables": {
+                "SAFE": "ok",
+                "API_TOKEN": "secret",
+            },
+        }
+
+        with (
+            patch(
+                "mac2nix.scanners.launch_agents.read_launchd_plists",
+                return_value=[(plist_path, "user", plist_data)],
+            ),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        entry = result.entries[0]
+        assert entry.raw_plist["EnvironmentVariables"]["API_TOKEN"] == redacted
+        assert entry.raw_plist["EnvironmentVariables"]["SAFE"] == "ok"
+
+    def test_raw_plist_is_deep_copy(self) -> None:
+        plist_data = {
+            "Label": "com.test.copy",
+            "EnvironmentVariables": {"API_KEY": "secret"},
+        }
+        original_data = {"Label": "com.test.copy", "EnvironmentVariables": {"API_KEY": "secret"}}
+
+        with (
+            patch(
+                "mac2nix.scanners.launch_agents.read_launchd_plists",
+                return_value=[(Path("/Users/test/Library/LaunchAgents/test.plist"), "user", plist_data)],
+            ),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
+        ):
+            LaunchAgentsScanner().scan()
+
+        # Original data should not be mutated
+        assert plist_data["EnvironmentVariables"]["API_KEY"] == original_data["EnvironmentVariables"]["API_KEY"]
+
+    def test_empty_plist_skipped(self) -> None:
+        plist_path = Path("/Users/test/Library/LaunchAgents/empty.plist")
+
+        with (
+            patch(
+                "mac2nix.scanners.launch_agents.read_launchd_plists",
+                return_value=[(plist_path, "user", {})],
+            ),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        assert isinstance(result, LaunchAgentsResult)
+        assert result.entries == []
+
+    def test_btm_enabled_disposition(self, cmd_result) -> None:
+        with (
+            patch("mac2nix.scanners.launch_agents.read_launchd_plists", return_value=[]),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=cmd_result(_BTM_OUTPUT)),
+            patch("mac2nix.scanners.launch_agents.os.getuid", return_value=501),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        login_entries = [e for e in result.entries if e.source == LaunchAgentSource.LOGIN_ITEM]
+        for entry in login_entries:
+            assert entry.enabled is True  # disposition says "enabled"
+
+    def test_system_agent(self) -> None:
+        plist_path = Path("/Library/LaunchAgents/com.system.agent.plist")
+        plist_data = {"Label": "com.system.agent", "Program": "/usr/bin/agent"}
+
+        with (
+            patch(
+                "mac2nix.scanners.launch_agents.read_launchd_plists",
+                return_value=[(plist_path, "system", plist_data)],
+            ),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        assert result.entries[0].source == LaunchAgentSource.SYSTEM
+        assert result.entries[0].plist_path == plist_path

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import TypeVar
 
 from pydantic import BaseModel
 
 SCANNER_REGISTRY: dict[str, type[BaseScannerPlugin]] = {}
+
+_T = TypeVar("_T", bound="BaseScannerPlugin")
 
 
 class BaseScannerPlugin(ABC):
@@ -32,13 +35,13 @@ class BaseScannerPlugin(ABC):
         return True
 
 
-def register(name: str) -> Callable[[type[BaseScannerPlugin]], type[BaseScannerPlugin]]:
+def register(name: str) -> Callable[[type[_T]], type[_T]]:
     """Class decorator factory to register a scanner plugin by name.
 
     Usage: @register("scanner_name")
     """
 
-    def decorator(cls: type[BaseScannerPlugin]) -> type[BaseScannerPlugin]:
+    def decorator(cls: type[_T]) -> type[_T]:
         SCANNER_REGISTRY[name] = cls
         return cls
 

@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+from pathlib import Path
 
-from mac2nix.models.application import BrewCask, BrewFormula, HomebrewState, MasApp
+from mac2nix.models.application import BrewCask, BrewFormula, BrewService, HomebrewState, MasApp
 from mac2nix.scanners._utils import run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
@@ -37,7 +38,22 @@ class HomebrewScanner(BaseScannerPlugin):
         formulae = [f.model_copy(update={"version": versions.get(f.name, f.version)}) for f in formulae]
         casks = [c.model_copy(update={"version": versions.get(c.name, c.version)}) for c in casks]
 
-        return HomebrewState(taps=taps, formulae=formulae, casks=casks, mas_apps=mas_apps)
+        # Mark pinned formulae
+        pinned_names = self._get_pinned()
+        if pinned_names:
+            formulae = [f.model_copy(update={"pinned": f.name in pinned_names}) for f in formulae]
+
+        services = self._get_services()
+        prefix = self._get_prefix()
+
+        return HomebrewState(
+            taps=taps,
+            formulae=formulae,
+            casks=casks,
+            mas_apps=mas_apps,
+            services=services,
+            prefix=prefix,
+        )
 
     def _parse_brewfile(
         self,
@@ -96,3 +112,42 @@ class HomebrewScanner(BaseScannerPlugin):
             if len(parts) >= 2:
                 versions[parts[0]] = parts[-1]
         return versions
+
+    def _get_pinned(self) -> set[str]:
+        """Get set of pinned formula names."""
+        result = run_command(["brew", "list", "--pinned"])
+        if result is None or result.returncode != 0:
+            return set()
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+    def _get_services(self) -> list[BrewService]:
+        """Parse brew services list output."""
+        result = run_command(["brew", "services", "list"])
+        if result is None or result.returncode != 0:
+            return []
+
+        services: list[BrewService] = []
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("Name"):
+                continue
+            parts = stripped.split()
+            if len(parts) < 2:
+                continue
+            name = parts[0]
+            status = parts[1]
+            user = parts[2] if len(parts) >= 3 and parts[2] != "none" else None
+            plist_str = parts[3] if len(parts) >= 4 and parts[3] != "none" else None
+            plist_path = Path(plist_str) if plist_str else None
+            services.append(
+                BrewService(name=name, status=status, user=user, plist_path=plist_path)
+            )
+        return services
+
+    def _get_prefix(self) -> str | None:
+        """Get Homebrew prefix path."""
+        result = run_command(["brew", "--prefix"])
+        if result is None or result.returncode != 0:
+            return None
+        prefix = result.stdout.strip()
+        return prefix or None

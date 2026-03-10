@@ -10,6 +10,7 @@ from mac2nix.scanners import (  # noqa: F401
     fonts,
     homebrew,
     launch_agents,
+    library_audit,
     network,
     preferences,
     security,

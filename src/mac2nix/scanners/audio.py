@@ -13,6 +13,20 @@ from mac2nix.scanners.base import BaseScannerPlugin, register
 logger = logging.getLogger(__name__)
 
 
+def _parse_int(value: str) -> int | None:
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _parse_float(value: str) -> float | None:
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 @register("audio")
 class AudioScanner(BaseScannerPlugin):
     @property
@@ -24,7 +38,7 @@ class AudioScanner(BaseScannerPlugin):
 
     def scan(self) -> AudioConfig:
         input_devices, output_devices, default_input, default_output = self._get_audio_devices()
-        alert_volume = self._get_alert_volume()
+        alert_volume, output_volume, input_volume, output_muted = self._get_volume_settings()
 
         return AudioConfig(
             input_devices=input_devices,
@@ -32,6 +46,9 @@ class AudioScanner(BaseScannerPlugin):
             default_input=default_input,
             default_output=default_output,
             alert_volume=alert_volume,
+            output_volume=output_volume,
+            input_volume=input_volume,
+            output_muted=output_muted,
         )
 
     def _get_audio_devices(
@@ -90,12 +107,39 @@ class AudioScanner(BaseScannerPlugin):
             is_output = True
         return is_input, is_output
 
-    def _get_alert_volume(self) -> float | None:
-        result = run_command(["osascript", "-e", "alert volume of (get volume settings)"])
+    def _get_volume_settings(
+        self,
+    ) -> tuple[float | None, int | None, int | None, bool | None]:
+        """Parse all volume settings from osascript 'get volume settings'.
+
+        Output format: "output volume:50, input volume:75, alert volume:100, output muted:false"
+        Returns: (alert_volume, output_volume, input_volume, output_muted)
+        """
+        result = run_command(["osascript", "-e", "get volume settings"])
         if result is None or result.returncode != 0:
-            return None
-        try:
-            return float(result.stdout.strip())
-        except ValueError:
-            logger.warning("Failed to parse alert volume: %s", result.stdout)
-            return None
+            return None, None, None, None
+
+        alert_volume: float | None = None
+        output_volume: int | None = None
+        input_volume: int | None = None
+        output_muted: bool | None = None
+        output = result.stdout.strip()
+
+        for raw_part in output.split(","):
+            segment = raw_part.strip()
+            if ":" not in segment:
+                continue
+            key, _, value = segment.partition(":")
+            key = key.strip()
+            value = value.strip()
+
+            if key == "output volume":
+                output_volume = _parse_int(value)
+            elif key == "input volume":
+                input_volume = _parse_int(value)
+            elif key == "alert volume":
+                alert_volume = _parse_float(value)
+            elif key == "output muted":
+                output_muted = value.lower() == "true"
+
+        return alert_volume, output_volume, input_volume, output_muted
