@@ -144,21 +144,49 @@ class TestNixInstallation:
             result = NixStateScanner._get_install_type()
         assert result == NixInstallType.UNKNOWN
 
-    def test_daemon_running(self, cmd_result) -> None:
+    def test_daemon_running_via_launchctl(self, cmd_result) -> None:
         with patch(
             "mac2nix.scanners.nix_state.run_command",
             return_value=cmd_result("12345\t0\torg.nixos.nix-daemon"),
         ):
             assert NixStateScanner._is_daemon_running() is True
 
+    def test_daemon_running_via_pgrep(self, cmd_result) -> None:
+        def side_effect(cmd, **_kwargs):
+            if cmd[0] == "launchctl":
+                return cmd_result("", returncode=1)
+            if cmd == ["pgrep", "-x", "nix-daemon"]:
+                return cmd_result("12345")
+            return None
+
+        with patch("mac2nix.scanners.nix_state.run_command", side_effect=side_effect):
+            assert NixStateScanner._is_daemon_running() is True
+
+    def test_daemon_running_via_determinate_pgrep(self, cmd_result) -> None:
+        def side_effect(cmd, **_kwargs):
+            if cmd[0] == "launchctl":
+                return cmd_result("", returncode=1)
+            if cmd == ["pgrep", "-x", "nix-daemon"]:
+                return cmd_result("", returncode=1)
+            if cmd == ["pgrep", "-x", "determinate-nixd"]:
+                return cmd_result("10000")
+            return None
+
+        with patch("mac2nix.scanners.nix_state.run_command", side_effect=side_effect):
+            assert NixStateScanner._is_daemon_running() is True
+
     def test_daemon_not_running(self, cmd_result) -> None:
-        with patch(
-            "mac2nix.scanners.nix_state.run_command",
-            return_value=cmd_result("-\t0\torg.nixos.nix-daemon"),
-        ):
+        def side_effect(cmd, **_kwargs):
+            if cmd[0] == "launchctl":
+                return cmd_result("-\t0\torg.nixos.nix-daemon")
+            if cmd[0] == "pgrep":
+                return cmd_result("", returncode=1)
+            return None
+
+        with patch("mac2nix.scanners.nix_state.run_command", side_effect=side_effect):
             assert NixStateScanner._is_daemon_running() is False
 
-    def test_daemon_command_fails(self) -> None:
+    def test_daemon_all_commands_fail(self) -> None:
         with patch("mac2nix.scanners.nix_state.run_command", return_value=None):
             assert NixStateScanner._is_daemon_running() is False
 
@@ -207,6 +235,41 @@ class TestProfileDetection:
         assert result[0].name == "default"
         assert len(result[0].packages) == 2
         assert result[0].packages[0].name == "hello-2.12"
+
+    def test_json_profile_list_nix3_dict_format(self, cmd_result, tmp_path: Path) -> None:
+        """Nix 3.x returns elements as a dict keyed by package name."""
+        profile_json = json.dumps(
+            {
+                "elements": {
+                    "hello": {
+                        "storePaths": ["/nix/store/abc123-hello-2.12"],
+                        "attrPath": "legacyPackages.aarch64-darwin.hello",
+                        "active": True,
+                    },
+                    "git": {
+                        "storePaths": ["/nix/store/def456-git-2.42.0"],
+                        "attrPath": "legacyPackages.aarch64-darwin.git",
+                        "active": True,
+                    },
+                },
+                "version": 3,
+            }
+        )
+        scanner = NixStateScanner()
+        with (
+            patch(
+                "mac2nix.scanners.nix_state.run_command",
+                return_value=cmd_result(profile_json),
+            ),
+            patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path),
+        ):
+            result = scanner._detect_profiles()
+
+        assert len(result) == 1
+        assert len(result[0].packages) == 2
+        names = {p.name for p in result[0].packages}
+        assert "hello" in names
+        assert "git" in names
 
     def test_legacy_nix_env_fallback(self, cmd_result, tmp_path: Path) -> None:
         def run_side_effect(cmd, **_kwargs):

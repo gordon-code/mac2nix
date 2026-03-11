@@ -116,7 +116,7 @@ class NixStateScanner(BaseScannerPlugin):
 
     @staticmethod
     def _is_daemon_running() -> bool:
-        # Try both official and Determinate installer service names
+        # Try both official and Determinate installer service names via launchctl
         for service in ("org.nixos.nix-daemon", "systems.determinate.nix-daemon"):
             result = run_command(["launchctl", "list", service])
             if result is None or result.returncode != 0:
@@ -133,6 +133,12 @@ class NixStateScanner(BaseScannerPlugin):
                     return True
                 except ValueError:
                     pass
+        # Fallback: launchctl in user domain can't see system services,
+        # so check for the process directly
+        for proc_name in ("nix-daemon", "determinate-nixd"):
+            result = run_command(["pgrep", "-x", proc_name])
+            if result is not None and result.returncode == 0 and result.stdout.strip():
+                return True
         return False
 
     def _detect_profiles(self) -> list[NixProfile]:
@@ -197,22 +203,31 @@ class NixStateScanner(BaseScannerPlugin):
     @staticmethod
     def _parse_profile_json(data: dict) -> list[NixProfilePackage]:
         packages: list[NixProfilePackage] = []
-        # Nix 2.4+ format: {"elements": [...]}
         elements = data.get("elements", [])
-        if isinstance(elements, list):
-            for elem in elements:
-                if not isinstance(elem, dict):
-                    continue
-                store_paths = elem.get("storePaths", [])
-                store_path = Path(store_paths[0]) if store_paths else None
-                # Derive name from store path: /nix/store/hash-name-version
-                name = store_path.name.split("-", 1)[1] if store_path else elem.get("attrPath", "unknown")
-                packages.append(
-                    NixProfilePackage(
-                        name=name,
-                        store_path=store_path,
-                    )
+        # Nix 3.x: elements is a dict keyed by package name
+        # Nix 2.4+: elements is a list of dicts
+        items: list[tuple[str | None, dict]] = []
+        if isinstance(elements, dict):
+            items = [(name, elem) for name, elem in elements.items() if isinstance(elem, dict)]
+        elif isinstance(elements, list):
+            items = [(None, elem) for elem in elements if isinstance(elem, dict)]
+
+        for pkg_name, elem in items:
+            store_paths = elem.get("storePaths", [])
+            store_path = Path(store_paths[0]) if store_paths else None
+            # Derive name: use dict key (Nix 3.x), or store path, or attrPath
+            if pkg_name:
+                name = pkg_name
+            elif store_path:
+                name = store_path.name.split("-", 1)[1] if "-" in store_path.name else store_path.name
+            else:
+                name = elem.get("attrPath", "unknown")
+            packages.append(
+                NixProfilePackage(
+                    name=name,
+                    store_path=store_path,
                 )
+            )
         return packages
 
     def _detect_darwin(self) -> NixDarwinState:
