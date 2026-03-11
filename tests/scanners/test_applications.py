@@ -226,6 +226,76 @@ class TestBinaryClassification:
         source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.gem/ruby/3.2.0/bin/rubocop"))
         assert source == BinarySource.GEM
 
+    def test_nix_store_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/nix/store/abc123-pkg/bin/foo"))
+        assert source == BinarySource.NIX
+
+    def test_nix_profile_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.nix-profile/bin/nix-env"))
+        assert source == BinarySource.NIX
+
+    def test_macports_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/opt/local/bin/port"))
+        assert source == BinarySource.MACPORTS
+
+    def test_asdf_shims_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.asdf/shims/python"))
+        assert source == BinarySource.ASDF
+
+    def test_asdf_installs_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(
+            Path("/Users/user/.asdf/installs/python/3.12.1/bin/python3")
+        )
+        assert source == BinarySource.ASDF
+
+    def test_mise_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(
+            Path("/Users/user/.local/share/mise/installs/python/3.12/bin/python3")
+        )
+        assert source == BinarySource.MISE
+
+    def test_mise_shims_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.mise/shims/python"))
+        assert source == BinarySource.MISE
+
+    def test_nvm_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.nvm/versions/node/v20.11.1/bin/node"))
+        assert source == BinarySource.NVM
+
+    def test_pyenv_shims_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.pyenv/shims/python3"))
+        assert source == BinarySource.PYENV
+
+    def test_pyenv_versions_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.pyenv/versions/3.12.1/bin/python3"))
+        assert source == BinarySource.PYENV
+
+    def test_rbenv_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.rbenv/shims/ruby"))
+        assert source == BinarySource.RBENV
+
+    def test_conda_miniconda_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/miniconda3/bin/conda"))
+        assert source == BinarySource.CONDA
+
+    def test_conda_miniforge_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/miniforge3/envs/ml/bin/python"))
+        assert source == BinarySource.CONDA
+
+    def test_conda_anaconda_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/anaconda3/bin/jupyter"))
+        assert source == BinarySource.CONDA
+
+    def test_sdkman_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(
+            Path("/Users/user/.sdkman/candidates/java/current/bin/java")
+        )
+        assert source == BinarySource.SDKMAN
+
+    def test_jenv_source(self) -> None:
+        source = ApplicationsScanner._classify_binary_source(Path("/Users/user/.jenv/shims/java"))
+        assert source == BinarySource.JENV
+
     def test_unknown_defaults_manual(self) -> None:
         source = ApplicationsScanner._classify_binary_source(Path("/some/random/path/tool"))
         assert source == BinarySource.MANUAL

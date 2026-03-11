@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class NetworkInterface(BaseModel):
@@ -67,6 +67,23 @@ class PrinterInfo(BaseModel):
     options: dict[str, str] = {}
 
 
+class SystemExtension(BaseModel):
+    """A system extension from /Library/SystemExtensions/."""
+
+    identifier: str
+    team_id: str | None = None
+    version: str | None = None
+    state: str | None = None
+
+
+class ICloudState(BaseModel):
+    """iCloud sync status — scan-only, cannot be configured via nix-darwin."""
+
+    signed_in: bool = False
+    desktop_sync: bool = False
+    documents_sync: bool = False
+
+
 class SystemConfig(BaseModel):
     hostname: str
     timezone: str | None = None
@@ -93,3 +110,7 @@ class SystemConfig(BaseModel):
     remote_login: bool | None = None
     screen_sharing: bool | None = None
     file_sharing: bool | None = None
+    rosetta_installed: bool | None = None
+    system_extensions: list[SystemExtension] = []
+    icloud: ICloudState = Field(default_factory=ICloudState)
+    mdm_enrolled: bool | None = None

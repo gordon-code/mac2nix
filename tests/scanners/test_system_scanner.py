@@ -588,3 +588,263 @@ AC Power:
 
         assert isinstance(result, SystemConfig)
         assert result.hardware_model is None
+
+
+class TestRosettaDetection:
+    def test_rosetta_installed_via_directory(self) -> None:
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=True),
+        ):
+            scanner = SystemScanner()
+            result = scanner._detect_rosetta()
+
+        assert result is True
+
+    def test_rosetta_installed_via_arch(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd[0] == "arch":
+                return cmd_result("", returncode=0)
+            return None
+
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner()._detect_rosetta()
+
+        assert result is True
+
+    def test_rosetta_not_installed(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd[0] == "arch":
+                return cmd_result("", returncode=1)
+            return None
+
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner()._detect_rosetta()
+
+        assert result is False
+
+    def test_rosetta_unknown(self) -> None:
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner()._detect_rosetta()
+
+        assert result is None
+
+    def test_rosetta_wired_into_scan(self) -> None:
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner().scan()
+
+        assert isinstance(result, SystemConfig)
+        assert result.rosetta_installed is None
+
+
+class TestSystemExtensionsDetection:
+    def test_no_extensions_command_fails(self) -> None:
+        with patch("mac2nix.scanners.system_scanner.run_command", return_value=None):
+            result = SystemScanner()._detect_system_extensions()
+
+        assert result == []
+
+    def test_extensions_nonzero_exit(self, cmd_result) -> None:
+        result_proc = cmd_result("", returncode=1)
+        with patch("mac2nix.scanners.system_scanner.run_command", return_value=result_proc):
+            result = SystemScanner()._detect_system_extensions()
+
+        assert result == []
+
+    def test_extensions_parsed(self, cmd_result) -> None:
+        ext_output = (
+            "--- com.apple.system_extension.driver_extension\n"
+            "enabled\tactive\tABCDEF1234\tcom.crowdstrike.falcon.Agent (6.50.16306)\tactivated_enabled\n"
+        )
+
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["systemextensionsctl", "list"]:
+                return cmd_result(ext_output)
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner()._detect_system_extensions()
+
+        assert len(result) >= 1
+        ext = result[0]
+        assert ext.identifier == "com.crowdstrike.falcon.Agent"
+        assert ext.team_id == "ABCDEF1234"
+
+    def test_extensions_skips_short_lines(self, cmd_result) -> None:
+        ext_output = "--- header\nab\n"
+
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["systemextensionsctl", "list"]:
+                return cmd_result(ext_output)
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner()._detect_system_extensions()
+
+        assert result == []
+
+    def test_extensions_skips_star_lines(self, cmd_result) -> None:
+        ext_output = "* * some star line\n"
+
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["systemextensionsctl", "list"]:
+                return cmd_result(ext_output)
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner()._detect_system_extensions()
+
+        assert result == []
+
+    def test_extensions_wired_into_scan(self) -> None:
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner().scan()
+
+        assert isinstance(result, SystemConfig)
+        assert result.system_extensions == []
+
+
+class TestICloudDetection:
+    def test_signed_in(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["defaults", "read", "MobileMeAccounts", "Accounts"]:
+                return cmd_result('(\n    {\n        AccountID = "user@icloud.com";\n    }\n)')
+            return None
+
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner()._detect_icloud()
+
+        assert result.signed_in is True
+
+    def test_not_signed_in_command_fails(self) -> None:
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner()._detect_icloud()
+
+        assert result.signed_in is False
+
+    def test_not_signed_in_empty_array(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["defaults", "read", "MobileMeAccounts", "Accounts"]:
+                return cmd_result("(\n)")
+            return None
+
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner()._detect_icloud()
+
+        assert result.signed_in is False
+
+    def test_desktop_documents_sync(self, tmp_path) -> None:
+        cloud_docs = tmp_path / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+        (cloud_docs / "Desktop").mkdir(parents=True)
+        (cloud_docs / "Documents").mkdir(parents=True)
+
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path),
+        ):
+            result = SystemScanner()._detect_icloud()
+
+        assert result.desktop_sync is True
+        assert result.documents_sync is True
+
+    def test_no_cloud_docs_dir(self, tmp_path) -> None:
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path),
+        ):
+            result = SystemScanner()._detect_icloud()
+
+        assert result.desktop_sync is False
+        assert result.documents_sync is False
+
+    def test_icloud_wired_into_scan(self) -> None:
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner().scan()
+
+        assert isinstance(result, SystemConfig)
+        assert result.icloud.signed_in is False
+
+
+class TestMDMDetection:
+    def test_mdm_enrolled(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["profiles", "status", "-type", "enrollment"]:
+                return cmd_result("Enrolled via DEP: Yes\nMDM enrollment: Yes (User Approved)")
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner()._detect_mdm()
+
+        assert result is True
+
+    def test_mdm_not_enrolled(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["profiles", "status", "-type", "enrollment"]:
+                return cmd_result("Enrolled via DEP: No\nMDM enrollment: No")
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner()._detect_mdm()
+
+        assert result is False
+
+    def test_mdm_unknown_command_fails(self) -> None:
+        with patch("mac2nix.scanners.system_scanner.run_command", return_value=None):
+            result = SystemScanner()._detect_mdm()
+
+        assert result is None
+
+    def test_mdm_nonzero_exit(self, cmd_result) -> None:
+        result_proc = cmd_result("", returncode=1)
+        with patch("mac2nix.scanners.system_scanner.run_command", return_value=result_proc):
+            result = SystemScanner()._detect_mdm()
+
+        assert result is None
+
+    def test_mdm_ambiguous_output(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["profiles", "status", "-type", "enrollment"]:
+                return cmd_result("Some unexpected output")
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner()._detect_mdm()
+
+        assert result is None
+
+    def test_mdm_wired_into_scan(self) -> None:
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.is_dir", return_value=False),
+        ):
+            result = SystemScanner().scan()
+
+        assert isinstance(result, SystemConfig)
+        assert result.mdm_enrolled is None

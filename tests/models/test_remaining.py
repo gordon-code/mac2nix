@@ -28,11 +28,13 @@ from mac2nix.models.services import (
 )
 from mac2nix.models.system import (
     FirewallAppRule,
+    ICloudState,
     NetworkConfig,
     NetworkInterface,
     PrinterInfo,
     SecurityState,
     SystemConfig,
+    SystemExtension,
     TimeMachineConfig,
     VpnProfile,
 )
@@ -269,14 +271,24 @@ class TestJsonRoundtrip:
 
 class TestBinarySource:
     def test_enum_values(self) -> None:
+        assert BinarySource.ASDF == "asdf"
         assert BinarySource.BREW == "brew"
         assert BinarySource.CARGO == "cargo"
-        assert BinarySource.GO == "go"
-        assert BinarySource.PIPX == "pipx"
-        assert BinarySource.NPM == "npm"
+        assert BinarySource.CONDA == "conda"
         assert BinarySource.GEM == "gem"
-        assert BinarySource.SYSTEM == "system"
+        assert BinarySource.GO == "go"
+        assert BinarySource.JENV == "jenv"
+        assert BinarySource.MACPORTS == "macports"
         assert BinarySource.MANUAL == "manual"
+        assert BinarySource.MISE == "mise"
+        assert BinarySource.NIX == "nix"
+        assert BinarySource.NPM == "npm"
+        assert BinarySource.NVM == "nvm"
+        assert BinarySource.PIPX == "pipx"
+        assert BinarySource.PYENV == "pyenv"
+        assert BinarySource.RBENV == "rbenv"
+        assert BinarySource.SDKMAN == "sdkman"
+        assert BinarySource.SYSTEM == "system"
 
     def test_is_str(self) -> None:
         assert isinstance(BinarySource.BREW, str)
@@ -820,3 +832,90 @@ class TestScheduledTasksCronEnv:
     def test_cron_env_default(self) -> None:
         tasks = ScheduledTasks()
         assert tasks.cron_env == {}
+
+
+class TestSystemExtension:
+    def test_construction(self) -> None:
+        ext = SystemExtension(
+            identifier="com.crowdstrike.falcon.Agent",
+            team_id="X9E956P446",
+            version="6.50.16306",
+            state="activated_enabled",
+        )
+        assert ext.identifier == "com.crowdstrike.falcon.Agent"
+        assert ext.team_id == "X9E956P446"
+        assert ext.version == "6.50.16306"
+        assert ext.state == "activated_enabled"
+
+    def test_defaults(self) -> None:
+        ext = SystemExtension(identifier="com.example.ext")
+        assert ext.team_id is None
+        assert ext.version is None
+        assert ext.state is None
+
+    def test_roundtrip(self) -> None:
+        ext = SystemExtension(
+            identifier="com.apple.DriverKit",
+            version="1.0",
+            state="activated_enabled",
+        )
+        json_str = ext.model_dump_json()
+        restored = SystemExtension.model_validate_json(json_str)
+        assert restored.identifier == ext.identifier
+        assert restored.state == ext.state
+
+
+class TestICloudState:
+    def test_defaults(self) -> None:
+        state = ICloudState()
+        assert state.signed_in is False
+        assert state.desktop_sync is False
+        assert state.documents_sync is False
+
+    def test_with_sync_enabled(self) -> None:
+        state = ICloudState(
+            signed_in=True,
+            desktop_sync=True,
+            documents_sync=True,
+        )
+        assert state.signed_in is True
+        assert state.desktop_sync is True
+        assert state.documents_sync is True
+
+    def test_roundtrip(self) -> None:
+        state = ICloudState(signed_in=True, desktop_sync=True)
+        json_str = state.model_dump_json()
+        restored = ICloudState.model_validate_json(json_str)
+        assert restored.signed_in is True
+        assert restored.desktop_sync is True
+        assert restored.documents_sync is False
+
+
+class TestSystemConfigNewFieldsRosetta:
+    def test_new_fields_defaults(self) -> None:
+        config = SystemConfig(hostname="macbook")
+        assert config.rosetta_installed is None
+        assert config.system_extensions == []
+        assert config.icloud.signed_in is False
+        assert config.mdm_enrolled is None
+
+    def test_with_rosetta_and_extensions(self) -> None:
+        config = SystemConfig(
+            hostname="macbook",
+            rosetta_installed=True,
+            system_extensions=[
+                SystemExtension(identifier="com.crowdstrike.falcon.Agent"),
+            ],
+            mdm_enrolled=False,
+        )
+        assert config.rosetta_installed is True
+        assert len(config.system_extensions) == 1
+        assert config.mdm_enrolled is False
+
+    def test_with_icloud(self) -> None:
+        config = SystemConfig(
+            hostname="macbook",
+            icloud=ICloudState(signed_in=True, desktop_sync=True),
+        )
+        assert config.icloud.signed_in is True
+        assert config.icloud.desktop_sync is True

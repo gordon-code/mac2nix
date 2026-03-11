@@ -15,14 +15,24 @@ class AppSource(StrEnum):
 
 
 class BinarySource(StrEnum):
+    ASDF = "asdf"
     BREW = "brew"
     CARGO = "cargo"
-    GO = "go"
-    PIPX = "pipx"
-    NPM = "npm"
+    CONDA = "conda"
     GEM = "gem"
-    SYSTEM = "system"
+    GO = "go"
+    JENV = "jenv"
+    MACPORTS = "macports"
     MANUAL = "manual"
+    MISE = "mise"
+    NIX = "nix"
+    NPM = "npm"
+    NVM = "nvm"
+    PIPX = "pipx"
+    PYENV = "pyenv"
+    RBENV = "rbenv"
+    SDKMAN = "sdkman"
+    SYSTEM = "system"
 
 
 class InstalledApp(BaseModel):

@@ -9,7 +9,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mac2nix.models.system import PrinterInfo, SystemConfig, TimeMachineConfig
+from mac2nix.models.system import (
+    ICloudState,
+    PrinterInfo,
+    SystemConfig,
+    SystemExtension,
+    TimeMachineConfig,
+)
 from mac2nix.scanners._utils import read_plist_safe, run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
@@ -44,6 +50,10 @@ class SystemScanner(BaseScannerPlugin):
         ntp_enabled, ntp_server = self._get_network_time()
         printers = self._get_printers()
         remote_login, screen_sharing, file_sharing = self._get_remote_access()
+        rosetta_installed = self._detect_rosetta()
+        system_extensions = self._detect_system_extensions()
+        icloud = self._detect_icloud()
+        mdm_enrolled = self._detect_mdm()
 
         return SystemConfig(
             hostname=hostname,
@@ -71,6 +81,10 @@ class SystemScanner(BaseScannerPlugin):
             remote_login=remote_login,
             screen_sharing=screen_sharing,
             file_sharing=file_sharing,
+            rosetta_installed=rosetta_installed,
+            system_extensions=system_extensions,
+            icloud=icloud,
+            mdm_enrolled=mdm_enrolled,
         )
 
     def _get_hostname(self) -> str:
@@ -395,3 +409,98 @@ class SystemScanner(BaseScannerPlugin):
             file_sharing = result.returncode == 0
 
         return remote_login, screen_sharing, file_sharing
+
+    def _detect_rosetta(self) -> bool | None:
+        """Check if Rosetta 2 is installed."""
+        if Path("/Library/Apple/usr/share/rosetta").is_dir():
+            return True
+        # Fallback: try running arch command
+        result = run_command(["arch", "-x86_64", "/usr/bin/true"], timeout=5)
+        if result is not None:
+            return result.returncode == 0
+        return None
+
+    def _detect_system_extensions(self) -> list[SystemExtension]:
+        """List installed system extensions."""
+        result = run_command(["systemextensionsctl", "list"])
+        if result is None or result.returncode != 0:
+            return []
+        extensions: list[SystemExtension] = []
+        for raw_line in result.stdout.splitlines():
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith(("---", "*")):
+                continue
+            parts = stripped.split()
+            if len(parts) < 3:
+                continue
+            parsed = self._parse_extension_line(parts)
+            if parsed:
+                extensions.append(parsed)
+        return extensions
+
+    @staticmethod
+    def _parse_extension_line(parts: list[str]) -> SystemExtension | None:
+        """Parse a single systemextensionsctl output line into a SystemExtension."""
+        identifier = None
+        team_id = None
+        version = None
+        state_parts: list[str] = []
+        for part in parts:
+            if "." in part and not part.startswith("(") and not part.endswith(")"):
+                if identifier is None and len(part.split(".")) >= 3:
+                    identifier = part
+                elif team_id is None:
+                    team_id = part
+            elif part.startswith("(") and part.endswith(")"):
+                version = part.strip("()")
+            elif part in {
+                "enabled",
+                "disabled",
+                "activated_enabled",
+                "activated_disabled",
+            }:
+                state_parts.append(part)
+            elif len(part) == 10 and part.isalnum() and team_id is None:
+                team_id = part
+        if not identifier:
+            return None
+        return SystemExtension(
+            identifier=identifier,
+            team_id=team_id,
+            version=version,
+            state="_".join(state_parts) if state_parts else None,
+        )
+
+    def _detect_icloud(self) -> ICloudState:
+        """Detect iCloud sign-in and sync status."""
+        signed_in = False
+        desktop_sync = False
+        documents_sync = False
+
+        result = run_command(["defaults", "read", "MobileMeAccounts", "Accounts"])
+        if result is not None and result.returncode == 0:
+            output = result.stdout.strip()
+            signed_in = bool(output) and output != "(\n)"
+
+        cloud_docs = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+        if cloud_docs.is_dir():
+            desktop_sync = (cloud_docs / "Desktop").is_dir()
+            documents_sync = (cloud_docs / "Documents").is_dir()
+
+        return ICloudState(
+            signed_in=signed_in,
+            desktop_sync=desktop_sync,
+            documents_sync=documents_sync,
+        )
+
+    def _detect_mdm(self) -> bool | None:
+        """Check if device is MDM enrolled."""
+        result = run_command(["profiles", "status", "-type", "enrollment"])
+        if result is None or result.returncode != 0:
+            return None
+        output = result.stdout.lower()
+        if "yes" in output:
+            return True
+        if "no" in output:
+            return False
+        return None

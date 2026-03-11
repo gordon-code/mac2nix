@@ -33,6 +33,27 @@ _SOURCE_PATTERNS: dict[str, BinarySource] = {
     ".npm": BinarySource.NPM,
     "node_modules/.bin": BinarySource.NPM,
     ".gem": BinarySource.GEM,
+    ".nix-profile/bin": BinarySource.NIX,
+    "nix/store": BinarySource.NIX,
+    # Version managers and package managers
+    "opt/local/bin": BinarySource.MACPORTS,
+    ".asdf/shims": BinarySource.ASDF,
+    ".asdf/installs": BinarySource.ASDF,
+    ".local/share/mise": BinarySource.MISE,
+    ".mise/shims": BinarySource.MISE,
+    ".nvm/versions": BinarySource.NVM,
+    ".pyenv/shims": BinarySource.PYENV,
+    ".pyenv/versions": BinarySource.PYENV,
+    ".rbenv/shims": BinarySource.RBENV,
+    ".rbenv/versions": BinarySource.RBENV,
+    "miniconda3/bin": BinarySource.CONDA,
+    "miniconda3/envs": BinarySource.CONDA,
+    "miniforge3/bin": BinarySource.CONDA,
+    "miniforge3/envs": BinarySource.CONDA,
+    "anaconda3/bin": BinarySource.CONDA,
+    "anaconda3/envs": BinarySource.CONDA,
+    ".sdkman/candidates": BinarySource.SDKMAN,
+    ".jenv/shims": BinarySource.JENV,
 }
 
 _SYSTEM_DIRS = frozenset({"/usr/bin", "/bin", "/usr/sbin", "/sbin"})

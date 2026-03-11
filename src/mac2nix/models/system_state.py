@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field
 from mac2nix.models.application import ApplicationsResult, HomebrewState
 from mac2nix.models.files import AppConfigResult, DotfilesResult, FontsResult, LibraryAuditResult
 from mac2nix.models.hardware import AudioConfig, DisplayConfig
+from mac2nix.models.package_managers import (
+    ContainersResult,
+    NixState,
+    PackageManagersResult,
+    VersionManagersResult,
+)
 from mac2nix.models.preferences import PreferencesResult
 from mac2nix.models.services import LaunchAgentsResult, ScheduledTasks, ShellConfig
 from mac2nix.models.system import NetworkConfig, SecurityState, SystemConfig
@@ -42,6 +48,10 @@ class SystemState(BaseModel):
     audio: AudioConfig | None = None
     cron: ScheduledTasks | None = None
     library_audit: LibraryAuditResult | None = None
+    nix_state: NixState | None = None
+    version_managers: VersionManagersResult | None = None
+    package_managers: PackageManagersResult | None = None
+    containers: ContainersResult | None = None
 
     def to_json(self, path: Path | None = None) -> str:
         """Serialize to JSON string. Optionally write to file."""
