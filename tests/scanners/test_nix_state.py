@@ -235,6 +235,7 @@ class TestProfileDetection:
         assert result[0].name == "default"
         assert len(result[0].packages) == 2
         assert result[0].packages[0].name == "hello-2.12"
+        assert result[0].packages[0].version == "2.12"
 
     def test_json_profile_list_nix3_dict_format(self, cmd_result, tmp_path: Path) -> None:
         """Nix 3.x returns elements as a dict keyed by package name."""
@@ -594,7 +595,11 @@ class TestConfigParsing:
         )
 
         scanner = NixStateScanner()
-        with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
+        no_sys_conf = tmp_path / "nonexistent"
+        with (
+            patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path),
+            patch("mac2nix.scanners.nix_state._SYSTEM_NIX_CONF", no_sys_conf),
+        ):
             result = scanner._detect_config()
 
         assert result.experimental_features == ["nix-command", "flakes"]
@@ -602,6 +607,32 @@ class TestConfigParsing:
         assert result.sandbox is True
         assert len(result.substituters) == 2
         assert result.trusted_users == ["root", "user"]
+
+    def test_extra_prefix_merged(self, tmp_path: Path) -> None:
+        """Nix extra-* keys should be merged into their base fields."""
+        nix_conf_dir = tmp_path / ".config" / "nix"
+        nix_conf_dir.mkdir(parents=True)
+        nix_conf = nix_conf_dir / "nix.conf"
+        nix_conf.write_text(
+            "extra-experimental-features = nix-command flakes\n"
+            "extra-substituters = https://install.determinate.systems\n"
+            "extra-trusted-users = admin\n"
+        )
+
+        scanner = NixStateScanner()
+        no_sys_conf = tmp_path / "nonexistent"
+        with (
+            patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path),
+            patch("mac2nix.scanners.nix_state._SYSTEM_NIX_CONF", no_sys_conf),
+        ):
+            result = scanner._detect_config()
+
+        assert result.experimental_features == ["nix-command", "flakes"]
+        assert result.substituters == ["https://install.determinate.systems"]
+        assert result.trusted_users == ["admin"]
+        # extra-* keys should NOT appear in extra_config
+        assert "extra-experimental-features" not in result.extra_config
+        assert "extra-substituters" not in result.extra_config
 
     def test_sensitive_key_redaction(self, tmp_path: Path) -> None:
         nix_conf_dir = tmp_path / ".config" / "nix"
@@ -616,7 +647,11 @@ class TestConfigParsing:
         )
 
         scanner = NixStateScanner()
-        with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
+        no_sys_conf = tmp_path / "nonexistent"
+        with (
+            patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path),
+            patch("mac2nix.scanners.nix_state._SYSTEM_NIX_CONF", no_sys_conf),
+        ):
             result = scanner._detect_config()
 
         assert result.extra_config.get("access-tokens") == "**REDACTED**"
@@ -633,7 +668,11 @@ class TestConfigParsing:
         nix_conf.write_text("# comment\n\nmax-jobs = 2\n# another comment\n")
 
         scanner = NixStateScanner()
-        with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
+        no_sys_conf = tmp_path / "nonexistent"
+        with (
+            patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path),
+            patch("mac2nix.scanners.nix_state._SYSTEM_NIX_CONF", no_sys_conf),
+        ):
             result = scanner._detect_config()
         assert result.max_jobs == 2
 
@@ -643,7 +682,11 @@ class TestConfigParsing:
         (user_dir / "nix.conf").write_text("max-jobs = 8\n")
 
         scanner = NixStateScanner()
-        with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
+        no_sys_conf = tmp_path / "nonexistent"
+        with (
+            patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path),
+            patch("mac2nix.scanners.nix_state._SYSTEM_NIX_CONF", no_sys_conf),
+        ):
             result = scanner._detect_config()
         assert result.max_jobs == 8
 
@@ -653,7 +696,11 @@ class TestConfigParsing:
         (nix_conf_dir / "nix.conf").write_text("max-jobs = auto\n")
 
         scanner = NixStateScanner()
-        with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
+        no_sys_conf = tmp_path / "nonexistent"
+        with (
+            patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path),
+            patch("mac2nix.scanners.nix_state._SYSTEM_NIX_CONF", no_sys_conf),
+        ):
             result = scanner._detect_config()
         assert result.max_jobs is None
 

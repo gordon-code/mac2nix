@@ -36,6 +36,7 @@ _PACKAGE_CAP = 500
 _ADJACENT_CAP = 50
 _ADJACENT_MAX_DEPTH = 2
 _PRUNE_DIRS = {".git", "node_modules", ".direnv", "__pycache__", ".venv"}
+_SYSTEM_NIX_CONF = Path("/etc/nix/nix.conf")
 
 _VERSION_RE = re.compile(r"(\d+\.\d+[\w.]*)")
 _REGISTRY_RE = re.compile(r"^\S+\s+flake:(\S+)\s+path:(\S+)")
@@ -215,16 +216,24 @@ class NixStateScanner(BaseScannerPlugin):
         for pkg_name, elem in items:
             store_paths = elem.get("storePaths", [])
             store_path = Path(store_paths[0]) if store_paths else None
-            # Derive name: use dict key (Nix 3.x), or store path, or attrPath
+            # Derive name and version from store path: /nix/store/hash-name-version
+            version: str | None = None
             if pkg_name:
                 name = pkg_name
             elif store_path:
                 name = store_path.name.split("-", 1)[1] if "-" in store_path.name else store_path.name
             else:
                 name = elem.get("attrPath", "unknown")
+            # Extract version from store path (e.g., "awscli2-2.33.2" → "2.33.2")
+            if store_path and "-" in store_path.name:
+                store_name = store_path.name.split("-", 1)[1]  # strip hash
+                match = _VERSION_RE.search(store_name)
+                if match:
+                    version = match.group(1)
             packages.append(
                 NixProfilePackage(
                     name=name,
+                    version=version,
                     store_path=store_path,
                 )
             )
@@ -411,7 +420,7 @@ class NixStateScanner(BaseScannerPlugin):
 
     def _detect_config(self) -> NixConfig:
         config_files = [
-            Path("/etc/nix/nix.conf"),
+            _SYSTEM_NIX_CONF,
             Path.home() / ".config" / "nix" / "nix.conf",
         ]
 
@@ -443,26 +452,30 @@ class NixStateScanner(BaseScannerPlugin):
 
                 merged[key] = value
 
+        # Nix supports both "key" and "extra-key" variants — merge them
+        def _merge_list(key: str) -> list[str]:
+            base = merged.get(key, "").split() if merged.get(key) else []
+            extra = merged.get(f"extra-{key}", "").split() if merged.get(f"extra-{key}") else []
+            return base + extra
+
+        known_keys = {
+            "experimental-features",
+            "extra-experimental-features",
+            "substituters",
+            "extra-substituters",
+            "trusted-users",
+            "extra-trusted-users",
+            "max-jobs",
+            "sandbox",
+        }
+
         return NixConfig(
-            experimental_features=merged.get("experimental-features", "").split()
-            if merged.get("experimental-features")
-            else [],
-            substituters=merged.get("substituters", "").split() if merged.get("substituters") else [],
-            trusted_users=merged.get("trusted-users", "").split() if merged.get("trusted-users") else [],
+            experimental_features=_merge_list("experimental-features"),
+            substituters=_merge_list("substituters"),
+            trusted_users=_merge_list("trusted-users"),
             max_jobs=self._parse_max_jobs(merged.get("max-jobs")),
             sandbox=merged["sandbox"] == "true" if merged.get("sandbox") else None,
-            extra_config={
-                k: v
-                for k, v in merged.items()
-                if k
-                not in {
-                    "experimental-features",
-                    "substituters",
-                    "trusted-users",
-                    "max-jobs",
-                    "sandbox",
-                }
-            },
+            extra_config={k: v for k, v in merged.items() if k not in known_keys},
         )
 
     @staticmethod
