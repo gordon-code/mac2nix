@@ -39,7 +39,7 @@ _PRUNE_DIRS = {".git", "node_modules", ".direnv", "__pycache__", ".venv"}
 _SYSTEM_NIX_CONF = Path("/etc/nix/nix.conf")
 
 _VERSION_RE = re.compile(r"(\d+\.\d+[\w.]*)")
-_REGISTRY_RE = re.compile(r"^\S+\s+flake:(\S+)\s+path:(\S+)")
+_REGISTRY_RE = re.compile(r"^\S+\s+flake:(\S+)\s+(\S+)")
 
 
 @register("nix_state")

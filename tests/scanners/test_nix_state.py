@@ -550,15 +550,21 @@ class TestChannelsFlakesRegistries:
         assert result == []
 
     def test_registry_list_parsing(self, cmd_result) -> None:
-        output = "global flake:nixpkgs path:/nix/store/abc-source\nuser flake:myflake path:/home/user/myflake\n"
+        output = (
+            "global flake:nixpkgs github:NixOS/nixpkgs\n"
+            "global flake:disko github:nix-community/disko\n"
+            "user flake:myflake path:/home/user/myflake\n"
+        )
         with patch(
             "mac2nix.scanners.nix_state.run_command",
             return_value=cmd_result(output),
         ):
             result = NixStateScanner._get_registries()
-        assert len(result) == 2
+        assert len(result) == 3
         assert result[0].from_name == "nixpkgs"
-        assert result[1].from_name == "myflake"
+        assert result[0].to_url == "github:NixOS/nixpkgs"
+        assert result[2].from_name == "myflake"
+        assert result[2].to_url == "path:/home/user/myflake"
 
     def test_registry_command_fails(self) -> None:
         with patch("mac2nix.scanners.nix_state.run_command", return_value=None):
