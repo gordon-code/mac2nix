@@ -29,7 +29,8 @@ from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
 
-_SENSITIVE_PATTERNS = {"KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "NETRC"}
+_SENSITIVE_PATTERNS = {"ACCESS_TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "NETRC"}
+_SENSITIVE_EXACT_KEYS = {"access-tokens", "netrc-file"}
 
 _PACKAGE_CAP = 500
 _ADJACENT_CAP = 50
@@ -115,21 +116,23 @@ class NixStateScanner(BaseScannerPlugin):
 
     @staticmethod
     def _is_daemon_running() -> bool:
-        result = run_command(["launchctl", "list", "org.nixos.nix-daemon"])
-        if result is None or result.returncode != 0:
-            return False
-        # launchctl list output: PID\tStatus\tLabel
-        # If PID is "-", the daemon is not running
-        first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
-        parts = first_line.split()
-        if len(parts) < 3:
-            return False
-        if parts[0] != "-":
-            try:
-                int(parts[0])
-                return True
-            except ValueError:
-                pass
+        # Try both official and Determinate installer service names
+        for service in ("org.nixos.nix-daemon", "systems.determinate.nix-daemon"):
+            result = run_command(["launchctl", "list", service])
+            if result is None or result.returncode != 0:
+                continue
+            # launchctl list output: PID\tStatus\tLabel
+            # If PID is "-", the daemon is not running
+            first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+            parts = first_line.split()
+            if len(parts) < 3:
+                continue
+            if parts[0] != "-":
+                try:
+                    int(parts[0])
+                    return True
+                except ValueError:
+                    pass
         return False
 
     def _detect_profiles(self) -> list[NixProfile]:
@@ -416,9 +419,12 @@ class NixStateScanner(BaseScannerPlugin):
                 value = value.strip()
 
                 # Redact sensitive values
-                normalized_key = key.upper().replace("-", "_")
-                if any(p in normalized_key for p in _SENSITIVE_PATTERNS):
+                if key in _SENSITIVE_EXACT_KEYS:
                     value = "**REDACTED**"
+                else:
+                    normalized_key = key.upper().replace("-", "_")
+                    if any(p in normalized_key for p in _SENSITIVE_PATTERNS):
+                        value = "**REDACTED**"
 
                 merged[key] = value
 

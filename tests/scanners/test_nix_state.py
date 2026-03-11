@@ -548,6 +548,7 @@ class TestConfigParsing:
             "access-tokens = github.com=ghp_secret123\n"
             "netrc-file = /etc/nix/netrc\n"
             "extra-secret-key = my-key-data\n"
+            "extra-trusted-public-keys = cache.example.com:abc123\n"
             "max-jobs = 8\n"
         )
 
@@ -556,7 +557,10 @@ class TestConfigParsing:
             result = scanner._detect_config()
 
         assert result.extra_config.get("access-tokens") == "**REDACTED**"
+        assert result.extra_config.get("netrc-file") == "**REDACTED**"
         assert result.extra_config.get("extra-secret-key") == "**REDACTED**"
+        # Public keys are NOT secrets — must not be redacted
+        assert result.extra_config.get("extra-trusted-public-keys") == "cache.example.com:abc123"
         assert result.max_jobs == 8
 
     def test_comments_and_blanks_skipped(self, tmp_path: Path) -> None:

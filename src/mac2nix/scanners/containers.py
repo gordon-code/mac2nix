@@ -89,7 +89,7 @@ class ContainersScanner(BaseScannerPlugin):
             # "podman version 5.0.0"
             parts = result.stdout.strip().split()
             if len(parts) >= 3:
-                version = parts[2]
+                version = parts[2].rstrip(",")
 
         # Check socket/machine for running status (mirrors Docker's approach)
         home = Path.home()
