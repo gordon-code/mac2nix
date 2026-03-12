@@ -63,11 +63,7 @@ class DisplayScanner(BaseScannerPlugin):
         resolution_str = str(resolution) if resolution is not None else None
         display_type = str(display.get("spdisplays_display_type", ""))
         pixel_res = str(display.get("spdisplays_pixelresolution", ""))
-        retina = (
-            "retina" in pixel_res.lower()
-            or "retina" in display_type.lower()
-            or "Retina" in (resolution_str or "")
-        )
+        retina = "retina" in pixel_res.lower() or "retina" in display_type.lower() or "Retina" in (resolution_str or "")
 
         arrangement = None
         if display.get("spdisplays_main") == "spdisplays_yes":
