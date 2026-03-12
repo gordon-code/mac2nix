@@ -91,7 +91,7 @@ class PreferencesScanner(BaseScannerPlugin):
             return None
         try:
             data = plistlib.loads(result.stdout.encode())
-        except (plistlib.InvalidFileException, ValueError, KeyError, OverflowError):
+        except (plistlib.InvalidFileException, ValueError, KeyError, OverflowError, AttributeError):
             return None
         if not isinstance(data, dict):
             return None

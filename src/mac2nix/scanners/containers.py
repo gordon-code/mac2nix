@@ -86,10 +86,14 @@ class ContainersScanner(BaseScannerPlugin):
         version: str | None = None
         result = run_command(["podman", "--version"])
         if result and result.returncode == 0:
-            # "podman version 5.0.0"
-            parts = result.stdout.strip().split()
-            if len(parts) >= 3:
-                version = parts[2].rstrip(",")
+            output = result.stdout.strip()
+            # Validate format: "podman version 5.0.0"
+            # Docker Desktop provides a podman shim that outputs "Docker version X"
+            if output.lower().startswith("podman"):
+                parts = output.split()
+                if len(parts) >= 3:
+                    version = parts[2].rstrip(",")
+            # else: Docker shim detected, leave version as None
 
         # Check socket/machine for running status (mirrors Docker's approach)
         home = Path.home()

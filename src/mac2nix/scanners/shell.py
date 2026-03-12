@@ -255,7 +255,11 @@ class ShellScanner(BaseScannerPlugin):
 
         match = _FISH_ADD_PATH.match(line)
         if match:
-            parsed.path_components.append(match.group(1).strip("'\""))
+            # Extract the actual path, skipping flags like --prepend --move --global
+            args = match.group(1).split()
+            path_arg = next((a for a in args if not a.startswith("-")), None)
+            if path_arg:
+                parsed.path_components.append(path_arg.strip("'\""))
             return
 
         match = _FISH_FUNCTION_PATTERN.match(line)

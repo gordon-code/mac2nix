@@ -68,6 +68,7 @@ class ApplicationsScanner(BaseScannerPlugin):
     def scan(self) -> ApplicationsResult:
         apps: list[InstalledApp] = []
         mas_names = self._get_mas_apps() if shutil.which("mas") else {}
+        cask_names = self._get_cask_apps()
 
         for app_dir in _APP_DIRS:
             if not app_dir.exists():
@@ -81,12 +82,17 @@ class ApplicationsScanner(BaseScannerPlugin):
 
                 if info_plist.exists():
                     data = read_plist_safe(info_plist)
-                    if data is not None:
+                    if isinstance(data, dict):
                         bundle_id = data.get("CFBundleIdentifier")
                         version = data.get("CFBundleShortVersionString")
 
                 app_name = app_path.stem
-                source = AppSource.APPSTORE if app_name.lower() in mas_names else AppSource.MANUAL
+                if app_name.lower() in mas_names:
+                    source = AppSource.APPSTORE
+                elif app_name.lower() in cask_names:
+                    source = AppSource.CASK
+                else:
+                    source = AppSource.MANUAL
 
                 apps.append(
                     InstalledApp(
@@ -109,6 +115,32 @@ class ApplicationsScanner(BaseScannerPlugin):
             xcode_version=xcode_version,
             clt_version=clt_version,
         )
+
+    @staticmethod
+    def _get_cask_apps() -> set[str]:
+        """Get app names installed via Homebrew Cask by checking the Caskroom."""
+        cask_names: set[str] = set()
+        for caskroom in [Path("/opt/homebrew/Caskroom"), Path("/usr/local/Caskroom")]:
+            if not caskroom.is_dir():
+                continue
+            try:
+                for cask_dir in caskroom.iterdir():
+                    if not cask_dir.is_dir():
+                        continue
+                    # Walk version subdirectories to find .app bundles
+                    try:
+                        for version_dir in cask_dir.iterdir():
+                            if not version_dir.is_dir():
+                                continue
+                            for item in version_dir.iterdir():
+                                if item.suffix == ".app":
+                                    cask_names.add(item.stem.lower())
+                    except (PermissionError, OSError):
+                        # Fall back to using the cask name itself
+                        cask_names.add(cask_dir.name.lower())
+            except PermissionError:
+                pass
+        return cask_names
 
     def _get_mas_apps(self) -> dict[str, int]:
         """Get App Store app names (lowercased) from mas list."""

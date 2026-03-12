@@ -105,12 +105,14 @@ class HomebrewScanner(BaseScannerPlugin):
     def _get_versions(self) -> dict[str, str]:
         """Parse brew list --versions output into name->version dict."""
         result = run_command(["brew", "list", "--versions"])
-        if result is None or result.returncode != 0:
+        if result is None:
             return {}
+        # Parse stdout even on non-zero exit — brew may report errors about
+        # broken cask references while still outputting valid version data.
         versions: dict[str, str] = {}
         for line in result.stdout.splitlines():
             parts = line.split()
-            if len(parts) >= 2:
+            if len(parts) >= 2 and not line.startswith("Error:"):
                 versions[parts[0]] = parts[-1]
         return versions
 

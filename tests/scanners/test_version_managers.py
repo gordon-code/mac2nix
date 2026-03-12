@@ -372,7 +372,8 @@ class TestPyenvDetection:
         assert len(active) == 1
         assert active[0].version == "3.12.1"
 
-    def test_present_via_dir_only(self, tmp_path: Path) -> None:
+    def test_not_present_with_dir_only(self, tmp_path: Path) -> None:
+        """A leftover ~/.pyenv directory without the binary means not installed."""
         pyenv_dir = tmp_path / ".pyenv"
         pyenv_dir.mkdir()
 
@@ -382,9 +383,7 @@ class TestPyenvDetection:
         ):
             result = VersionManagersScanner()._detect_pyenv()
 
-        assert result is not None
-        assert result.version is None
-        assert result.runtimes == []
+        assert result is None
 
     def test_version_command_fails(self, cmd_result) -> None:
         def side_effect(cmd, **_kwargs):
@@ -448,7 +447,8 @@ class TestRbenvDetection:
         assert active[0].version == "3.3.0"
         assert active[0].language == "ruby"
 
-    def test_present_via_dir_only(self, tmp_path: Path) -> None:
+    def test_not_present_with_dir_only(self, tmp_path: Path) -> None:
+        """A leftover ~/.rbenv directory without the binary means not installed."""
         rbenv_dir = tmp_path / ".rbenv"
         rbenv_dir.mkdir()
 
@@ -458,9 +458,7 @@ class TestRbenvDetection:
         ):
             result = VersionManagersScanner()._detect_rbenv()
 
-        assert result is not None
-        assert result.version is None
-        assert result.runtimes == []
+        assert result is None
 
     def test_versions_command_fails(self, cmd_result) -> None:
         def side_effect(cmd, **_kwargs):
@@ -517,7 +515,8 @@ class TestJenvDetection:
         assert active[0].version == "21.0.1"
         assert active[0].language == "java"
 
-    def test_present_via_dir_only(self, tmp_path: Path) -> None:
+    def test_not_present_with_dir_only(self, tmp_path: Path) -> None:
+        """A leftover ~/.jenv directory without the binary means not installed."""
         jenv_dir = tmp_path / ".jenv"
         jenv_dir.mkdir()
 
@@ -527,8 +526,7 @@ class TestJenvDetection:
         ):
             result = VersionManagersScanner()._detect_jenv()
 
-        assert result is not None
-        assert result.runtimes == []
+        assert result is None
 
     def test_versions_command_fails(self) -> None:
         with (

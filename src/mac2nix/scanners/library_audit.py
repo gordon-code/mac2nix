@@ -241,8 +241,9 @@ class LibraryAuditScanner(BaseScannerPlugin):
         strategy = "hash_only"
 
         if suffix == ".plist":
-            plist_content = read_plist_safe(filepath)
-            if plist_content is not None:
+            raw_plist = read_plist_safe(filepath)
+            if isinstance(raw_plist, dict):
+                plist_content = raw_plist
                 _redact_sensitive_keys(plist_content)
                 strategy = "plist_capture"
         elif suffix in {".txt", ".md", ".cfg", ".conf", ".ini", ".yaml", ".yml", ".json", ".xml"}:
@@ -352,7 +353,9 @@ class LibraryAuditScanner(BaseScannerPlugin):
 
         doc_plist = wf_path / "Contents" / "document.wflow"
         if doc_plist.is_file():
-            definition = read_plist_safe(doc_plist)
+            raw = read_plist_safe(doc_plist)
+            if isinstance(raw, dict):
+                definition = raw
 
         return WorkflowEntry(
             name=wf_path.stem,

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import plistlib
 import shutil
 from pathlib import Path
+from typing import Any
 
 from mac2nix.models.hardware import DisplayConfig, Monitor, NightShiftConfig
 from mac2nix.scanners._utils import read_plist_safe, run_command
@@ -60,17 +62,26 @@ class DisplayScanner(BaseScannerPlugin):
         resolution = display.get("_spdisplays_resolution", display.get("spdisplays_resolution"))
         resolution_str = str(resolution) if resolution is not None else None
         display_type = str(display.get("spdisplays_display_type", ""))
-        retina = "Retina" in (resolution_str or "") or display_type == "spdisplays_retina"
+        pixel_res = str(display.get("spdisplays_pixelresolution", ""))
+        retina = (
+            "retina" in pixel_res.lower()
+            or "retina" in display_type.lower()
+            or "Retina" in (resolution_str or "")
+        )
 
         arrangement = None
         if display.get("spdisplays_main") == "spdisplays_yes":
             arrangement = "primary"
 
-        # Refresh rate (12b)
+        # Refresh rate: try dedicated key, fall back to parsing resolution string
         refresh_rate = display.get("_spdisplays_refresh", display.get("spdisplays_refresh"))
         refresh_str = str(refresh_rate) if refresh_rate is not None else None
+        if refresh_str is None and resolution_str and "@" in resolution_str:
+            # Parse from "2560 x 1440 @ 100.00Hz"
+            hz_part = resolution_str.split("@", 1)[1].strip()
+            refresh_str = hz_part.replace("Hz", "").strip()
 
-        # Color profile (12c)
+        # Color profile
         color_profile = display.get("spdisplays_color_profile", display.get("_spdisplays_color_profile"))
         color_str = str(color_profile) if color_profile is not None else None
 
@@ -85,53 +96,87 @@ class DisplayScanner(BaseScannerPlugin):
 
     def _get_night_shift(self) -> NightShiftConfig | None:
         """Detect Night Shift settings from CoreBrightness preferences."""
+        # Try plist files first
         for plist_path in [
             Path.home() / "Library" / "Preferences" / "com.apple.CoreBrightness.plist",
             Path("/private/var/root/Library/Preferences/com.apple.CoreBrightness.plist"),
         ]:
             data = read_plist_safe(plist_path)
-            if data is None:
+            if not isinstance(data, dict):
                 continue
+            config = self._parse_night_shift(data)
+            if config is not None:
+                return config
 
-            # Night Shift data lives under CBBlueReductionStatus. On some
-            # macOS versions the plist is keyed by user UUID at the top level
-            # (e.g. {"<uuid>": {"CBBlueReductionStatus": {...}}}), so we
-            # fall back to searching one level deep for the nested key.
-            ns_data = data.get("CBBlueReductionStatus", {})
-            if not isinstance(ns_data, dict):
-                for val in data.values():
-                    if isinstance(val, dict) and "CBBlueReductionStatus" in val:
-                        ns_data = val["CBBlueReductionStatus"]
-                        break
-
-            if not ns_data:
-                continue
-
-            enabled = ns_data.get("BlueReductionEnabled")
-            mode = ns_data.get("BlueReductionMode")
-            schedule: str | None = None
-            if mode == 1:
-                schedule = "sunset-to-sunrise"
-            elif mode == 2:
-                schedule = "custom"
-            elif enabled is False or enabled == 0:
-                schedule = "off"
-
-            return NightShiftConfig(
-                enabled=bool(enabled) if enabled is not None else None,
-                schedule=schedule,
-            )
+        # Fall back to cfprefsd via defaults export
+        result = run_command(["defaults", "export", "com.apple.CoreBrightness", "-"])
+        if result is not None and result.returncode == 0:
+            try:
+                data = plistlib.loads(result.stdout.encode())
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                config = self._parse_night_shift(data)
+                if config is not None:
+                    return config
 
         return None
 
+    @staticmethod
+    def _parse_night_shift(data: dict[str, Any]) -> NightShiftConfig | None:
+        """Extract Night Shift config from CoreBrightness plist data."""
+        # Night Shift data lives under CBBlueReductionStatus. On some
+        # macOS versions the plist is keyed by user UUID at the top level.
+        ns_data = data.get("CBBlueReductionStatus", {})
+        if not isinstance(ns_data, dict):
+            for val in data.values():
+                if isinstance(val, dict) and "CBBlueReductionStatus" in val:
+                    ns_data = val["CBBlueReductionStatus"]
+                    break
+
+        if not ns_data:
+            return None
+
+        enabled = ns_data.get("BlueReductionEnabled")
+        mode = ns_data.get("BlueReductionMode")
+        schedule: str | None = None
+        if mode == 1:
+            schedule = "sunset-to-sunrise"
+        elif mode == 2:
+            schedule = "custom"
+        elif enabled is False or enabled == 0:
+            schedule = "off"
+
+        return NightShiftConfig(
+            enabled=bool(enabled) if enabled is not None else None,
+            schedule=schedule,
+        )
+
     def _get_true_tone(self) -> bool | None:
         """Check True Tone (Color Adaptation) status."""
+        # Try defaults read first
         result = run_command(["defaults", "read", "com.apple.CoreBrightness", "CBColorAdaptationEnabled"])
-        if result is None or result.returncode != 0:
-            return None
-        value = result.stdout.strip()
-        if value == "1":
-            return True
-        if value == "0":
-            return False
+        if result is not None and result.returncode == 0:
+            value = result.stdout.strip()
+            if value == "1":
+                return True
+            if value == "0":
+                return False
+
+        # Fall back to full export and search
+        result = run_command(["defaults", "export", "com.apple.CoreBrightness", "-"])
+        if result is not None and result.returncode == 0:
+            try:
+                data = plistlib.loads(result.stdout.encode())
+            except Exception:
+                return None
+            if isinstance(data, dict):
+                # May be nested under a user UUID key
+                val = data.get("CBColorAdaptationEnabled")
+                if val is not None:
+                    return bool(val)
+                for v in data.values():
+                    if isinstance(v, dict) and "CBColorAdaptationEnabled" in v:
+                        return bool(v["CBColorAdaptationEnabled"])
+
         return None

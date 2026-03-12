@@ -25,13 +25,15 @@ LAUNCHD_DIRS: list[tuple[Path, str]] = [
 def convert_datetimes(obj: Any) -> Any:
     """Recursively convert non-JSON-safe plist values.
 
-    plistlib returns datetime objects (for NSDate) and bytes objects (for NSData)
-    that are not JSON-serializable. Convert them to strings.
+    plistlib returns datetime objects (for NSDate), bytes objects (for NSData),
+    and UID objects that are not JSON-serializable. Convert them to strings/ints.
     """
     if isinstance(obj, datetime):
         return obj.isoformat()
     if isinstance(obj, bytes):
         return f"<data:{len(obj)} bytes>"
+    if isinstance(obj, plistlib.UID):
+        return int(obj)
     if isinstance(obj, dict):
         return {k: convert_datetimes(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -65,7 +67,7 @@ def run_command(
         return None
 
 
-def read_plist_safe(path: Path) -> dict[str, Any] | None:
+def read_plist_safe(path: Path) -> dict[str, Any] | list[Any] | None:
     """Read a plist file safely, returning None on failure.
 
     Handles both binary and XML plists. Converts datetime values to ISO strings
@@ -175,7 +177,7 @@ def read_launchd_plists() -> list[tuple[Path, str, dict[str, Any]]]:
             continue
         for plist_path in plist_files:
             data = read_plist_safe(plist_path)
-            if data is not None:
+            if isinstance(data, dict):
                 results.append((plist_path, source_key, data))
     return results
 

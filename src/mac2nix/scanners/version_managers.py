@@ -225,18 +225,18 @@ class VersionManagersScanner(BaseScannerPlugin):
 
     def _detect_pyenv(self) -> VersionManagerInfo | None:
         has_binary = shutil.which("pyenv") is not None
-        pyenv_root = Path.home() / ".pyenv"
 
-        if not has_binary and not pyenv_root.is_dir():
+        # Require binary — a leftover ~/.pyenv directory without the binary
+        # means pyenv is not actually installed/usable.
+        if not has_binary:
             return None
 
         version: str | None = None
-        if has_binary:
-            result = run_command(["pyenv", "--version"])
-            if result is not None and result.returncode == 0:
-                # Output: "pyenv 2.3.36"
-                parts = result.stdout.strip().split()
-                version = parts[1] if len(parts) >= 2 else result.stdout.strip()
+        result = run_command(["pyenv", "--version"])
+        if result is not None and result.returncode == 0:
+            # Output: "pyenv 2.3.36"
+            parts = result.stdout.strip().split()
+            version = parts[1] if len(parts) >= 2 else result.stdout.strip()
 
         runtimes = self._parse_pyenv_versions(has_binary)
 
@@ -278,18 +278,18 @@ class VersionManagersScanner(BaseScannerPlugin):
 
     def _detect_rbenv(self) -> VersionManagerInfo | None:
         has_binary = shutil.which("rbenv") is not None
-        rbenv_root = Path.home() / ".rbenv"
 
-        if not has_binary and not rbenv_root.is_dir():
+        # Require binary — a leftover ~/.rbenv directory without the binary
+        # means rbenv is not actually installed/usable.
+        if not has_binary:
             return None
 
         version: str | None = None
-        if has_binary:
-            result = run_command(["rbenv", "--version"])
-            if result is not None and result.returncode == 0:
-                # Output: "rbenv 1.2.0"
-                parts = result.stdout.strip().split()
-                version = parts[1] if len(parts) >= 2 else result.stdout.strip()
+        result = run_command(["rbenv", "--version"])
+        if result is not None and result.returncode == 0:
+            # Output: "rbenv 1.2.0"
+            parts = result.stdout.strip().split()
+            version = parts[1] if len(parts) >= 2 else result.stdout.strip()
 
         runtimes = self._parse_rbenv_versions(has_binary)
 
@@ -330,9 +330,10 @@ class VersionManagersScanner(BaseScannerPlugin):
 
     def _detect_jenv(self) -> VersionManagerInfo | None:
         has_binary = shutil.which("jenv") is not None
-        jenv_root = Path.home() / ".jenv"
 
-        if not has_binary and not jenv_root.is_dir():
+        # Require binary — a leftover ~/.jenv directory without the binary
+        # means jenv is not actually installed/usable.
+        if not has_binary:
             return None
 
         runtimes = self._parse_jenv_versions(has_binary)

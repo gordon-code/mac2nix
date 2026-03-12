@@ -665,8 +665,11 @@ class TestSystemExtensionsDetection:
 
     def test_extensions_parsed(self, cmd_result) -> None:
         ext_output = (
+            "1 extension(s)\n"
             "--- com.apple.system_extension.driver_extension\n"
-            "enabled\tactive\tABCDEF1234\tcom.crowdstrike.falcon.Agent (6.50.16306)\tactivated_enabled\n"
+            "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n"
+            "*\t*\tABCDEF1234\tcom.crowdstrike.falcon.Agent (6.50.16306)\t"
+            "CrowdStrike Falcon\t[activated enabled]\n"
         )
 
         def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
@@ -695,8 +698,12 @@ class TestSystemExtensionsDetection:
 
         assert result == []
 
-    def test_extensions_skips_star_lines(self, cmd_result) -> None:
-        ext_output = "* * some star line\n"
+    def test_extensions_skips_header_lines(self, cmd_result) -> None:
+        ext_output = (
+            "0 extension(s)\n"
+            "--- com.apple.system_extension.driver_extension\n"
+            "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n"
+        )
 
         def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
             if cmd == ["systemextensionsctl", "list"]:

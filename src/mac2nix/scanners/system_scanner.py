@@ -255,7 +255,7 @@ class SystemScanner(BaseScannerPlugin):
         """Read software update preferences."""
         plist_path = Path("/Library/Preferences/com.apple.SoftwareUpdate.plist")
         data = read_plist_safe(plist_path)
-        if data is None:
+        if not isinstance(data, dict):
             return {}
         # Extract known keys of interest
         keys = [
@@ -282,6 +282,9 @@ class SystemScanner(BaseScannerPlugin):
             if result is None or result.returncode != 0:
                 continue
             output = result.stdout.strip()
+            # Filter out admin-required errors
+            if "administrator access" in output.lower():
+                continue
             # Parse "Computer Sleep: 10" or "Wake On Network Access: On"
             if ":" in output:
                 value = output.split(":", 1)[1].strip()
@@ -291,13 +294,31 @@ class SystemScanner(BaseScannerPlugin):
                 except ValueError:
                     settings[key] = value
 
+        # Fallback: extract sleep values from pmset if systemsetup failed
+        if not settings:
+            result = run_command(["pmset", "-g"])
+            if result is not None and result.returncode == 0:
+                key_map = {
+                    "sleep": "computer_sleep",
+                    "displaysleep": "display_sleep",
+                    "disksleep": "hard_disk_sleep",
+                    "womp": "wake_on_network",
+                }
+                for line in result.stdout.splitlines():
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[0] in key_map:
+                        try:
+                            settings[key_map[parts[0]]] = int(parts[1])
+                        except ValueError:
+                            settings[key_map[parts[0]]] = parts[1]
+
         return settings
 
     def _get_login_window(self) -> dict[str, Any]:
         """Read login window preferences."""
         plist_path = Path("/Library/Preferences/com.apple.loginwindow.plist")
         data = read_plist_safe(plist_path)
-        if data is None:
+        if not isinstance(data, dict):
             return {}
         keys = [
             "autoLoginUser",
@@ -339,6 +360,25 @@ class SystemScanner(BaseScannerPlugin):
             output = result.stdout.strip()
             if ":" in output:
                 ntp_server = output.split(":", 1)[1].strip() or None
+
+        # Fallback: check if timed service is running (admin-free)
+        if ntp_enabled is None:
+            result = run_command(["launchctl", "list", "com.apple.timed"])
+            if result is not None:
+                ntp_enabled = result.returncode == 0
+
+        # Fallback: read NTP server from ntp.conf
+        if ntp_server is None:
+            ntp_conf = Path("/etc/ntp.conf")
+            if ntp_conf.is_file():
+                try:
+                    for line in ntp_conf.read_text().splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith("server "):
+                            ntp_server = stripped.split(None, 1)[1].strip()
+                            break
+                except OSError:
+                    pass
 
         return ntp_enabled, ntp_server
 
@@ -428,8 +468,12 @@ class SystemScanner(BaseScannerPlugin):
         extensions: list[SystemExtension] = []
         for raw_line in result.stdout.splitlines():
             stripped = raw_line.strip()
-            if not stripped or stripped.startswith(("---", "*")):
+            if not stripped or stripped.startswith("---"):
                 continue
+            # Header line: "enabled\tactive\tteamID\tbundleID..."
+            if stripped.startswith("enabled") or stripped.endswith("extension(s)"):
+                continue
+            # Data lines start with * (enabled/active markers) or contain bundle IDs
             parts = stripped.split()
             if len(parts) < 3:
                 continue
@@ -444,7 +488,7 @@ class SystemScanner(BaseScannerPlugin):
         identifier = None
         team_id = None
         version = None
-        state_parts: list[str] = []
+        state_str: str | None = None
         for part in parts:
             if "." in part and not part.startswith("(") and not part.endswith(")"):
                 if identifier is None and len(part.split(".")) >= 3:
@@ -453,22 +497,22 @@ class SystemScanner(BaseScannerPlugin):
                     team_id = part
             elif part.startswith("(") and part.endswith(")"):
                 version = part.strip("()")
-            elif part in {
-                "enabled",
-                "disabled",
-                "activated_enabled",
-                "activated_disabled",
-            }:
-                state_parts.append(part)
             elif len(part) == 10 and part.isalnum() and team_id is None:
                 team_id = part
+
+        # Extract state from bracketed section: [activated enabled]
+        raw = " ".join(parts)
+        if "[" in raw and "]" in raw:
+            bracket_content = raw.split("[", 1)[1].split("]", 1)[0].strip()
+            state_str = bracket_content.replace(" ", "_") if bracket_content else None
+
         if not identifier:
             return None
         return SystemExtension(
             identifier=identifier,
             team_id=team_id,
             version=version,
-            state="_".join(state_parts) if state_parts else None,
+            state=state_str,
         )
 
     def _detect_icloud(self) -> ICloudState:
