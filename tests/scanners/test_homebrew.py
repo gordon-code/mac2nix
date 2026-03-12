@@ -95,9 +95,16 @@ class TestHomebrewScanner:
         assert result.mas_apps[0].app_id == 409183694
 
     def test_version_enrichment(self, cmd_result) -> None:
-        with patch(
-            "mac2nix.scanners.homebrew.run_command",
-            side_effect=self._scan_side_effects(cmd_result),
+        with (
+            patch(
+                "mac2nix.scanners.homebrew.run_command",
+                side_effect=self._scan_side_effects(cmd_result),
+            ),
+            patch.object(
+                HomebrewScanner,
+                "_get_cask_versions",
+                return_value={"firefox": "124.0", "iterm2": "3.5.0"},
+            ),
         ):
             result = HomebrewScanner().scan()
 

@@ -361,9 +361,9 @@ class SystemScanner(BaseScannerPlugin):
             if ":" in output:
                 ntp_server = output.split(":", 1)[1].strip() or None
 
-        # Fallback: check if timed service is running (admin-free)
+        # Fallback: check if timed process is running (admin-free)
         if ntp_enabled is None:
-            result = run_command(["launchctl", "list", "com.apple.timed"])
+            result = run_command(["pgrep", "-x", "timed"])
             if result is not None:
                 ntp_enabled = result.returncode == 0
 

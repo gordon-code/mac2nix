@@ -233,7 +233,9 @@ class TestNetworkScanner:
         ifconfig_mixed = (
             "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
             "\tinet 192.168.1.42 netmask 0xffffff00\n"
+            "\tstatus: active\n"
             "en1: flags=8822<BROADCAST,SMART,SIMPLEX,MULTICAST> mtu 1500\n"
+            "\tstatus: inactive\n"
         )
         responses = {
             ("networksetup", "-listallhardwareports"): cmd_result(_HARDWARE_PORTS),

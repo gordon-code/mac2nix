@@ -12,8 +12,6 @@ from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
 
-_FLAGS_PATTERN = re.compile(r"flags=\w+<([^>]*)>")
-
 
 @register("network")
 class NetworkScanner(BaseScannerPlugin):
@@ -99,13 +97,15 @@ class NetworkScanner(BaseScannerPlugin):
         for raw_line in result.stdout.splitlines():
             if raw_line and not raw_line[0].isspace() and ":" in raw_line:
                 current_iface = raw_line.split(":")[0]
-                # Parse flags for UP status
-                flags_match = _FLAGS_PATTERN.search(raw_line)
-                if flags_match:
-                    flags = flags_match.group(1)
-                    active_map[current_iface] = "UP" in flags.split(",")
+                # Default to False; will be updated by "status:" line
+                active_map[current_iface] = False
             elif current_iface:
-                if "inet " in raw_line:
+                stripped = raw_line.strip()
+                if stripped.startswith("status:"):
+                    # "status: active" means link is up; "status: inactive" means no link
+                    status_value = stripped.split(":", 1)[1].strip()
+                    active_map[current_iface] = status_value == "active"
+                elif "inet " in raw_line:
                     match = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", raw_line)
                     if match and match.group(1) != "127.0.0.1":
                         ip_map[current_iface] = match.group(1)
@@ -235,16 +235,19 @@ class NetworkScanner(BaseScannerPlugin):
             return []
 
         profiles: list[VpnProfile] = []
-        # Lines like: * (Connected)     UUID    "VPN Name"                     [IPSec]
-        vpn_pattern = re.compile(r'^\*\s+\((\w+)\)\s+\S+\s+"([^"]+)"\s+\[(\w+)\]')
+        # Lines like:
+        #   * (Disconnected)  UUID VPN (com.ubnt.wifiman) "Name"  [VPN:com.ubnt.wifiman]
+        #   * (Connected)     UUID PPP --> DeviceName "Name"      [PPP:Modem]
+        vpn_pattern = re.compile(r'^\*\s+\((\w+)\)\s+\S+\s+.*?"([^"]+)"\s+\[([^\]]+)\]')
         for line in result.stdout.splitlines():
             match = vpn_pattern.match(line.strip())
             if match:
+                protocol = match.group(3).split(":")[0]  # "VPN:com.foo" → "VPN"
                 profiles.append(
                     VpnProfile(
                         name=match.group(2),
                         status=match.group(1),
-                        protocol=match.group(3),
+                        protocol=protocol,
                     )
                 )
         return profiles

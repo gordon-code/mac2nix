@@ -37,7 +37,10 @@ class HomebrewScanner(BaseScannerPlugin):
         # Enrich with versions from brew list
         versions = self._get_versions()
         formulae = [f.model_copy(update={"version": versions.get(f.name, f.version)}) for f in formulae]
-        casks = [c.model_copy(update={"version": versions.get(c.name, c.version)}) for c in casks]
+
+        # Enrich cask versions from Caskroom directory
+        cask_versions = self._get_cask_versions()
+        casks = [c.model_copy(update={"version": cask_versions.get(c.name, c.version)}) for c in casks]
 
         # Mark pinned formulae
         pinned_names = self._get_pinned()
@@ -114,6 +117,30 @@ class HomebrewScanner(BaseScannerPlugin):
             parts = line.split()
             if len(parts) >= 2 and not line.startswith("Error:"):
                 versions[parts[0]] = parts[-1]
+        return versions
+
+    @staticmethod
+    def _get_cask_versions() -> dict[str, str]:
+        """Read cask versions from the Caskroom directory structure."""
+        versions: dict[str, str] = {}
+        for caskroom in [Path("/opt/homebrew/Caskroom"), Path("/usr/local/Caskroom")]:
+            if not caskroom.is_dir():
+                continue
+            try:
+                for cask_dir in caskroom.iterdir():
+                    if not cask_dir.is_dir():
+                        continue
+                    # Each cask has version subdirectories; use the latest one
+                    try:
+                        version_dirs = sorted(
+                            (d.name for d in cask_dir.iterdir() if d.is_dir() and d.name != ".metadata"),
+                        )
+                        if version_dirs:
+                            versions[cask_dir.name] = version_dirs[-1]
+                    except PermissionError:
+                        pass
+            except PermissionError:
+                pass
         return versions
 
     def _get_pinned(self) -> set[str]:

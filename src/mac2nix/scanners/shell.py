@@ -211,18 +211,18 @@ class ShellScanner(BaseScannerPlugin):
         match = _SOURCE_PATTERN.match(line)
         if not match:
             return
-        self._resolve_and_track_source(match.group(1).strip("'\""), parsed, home, seen_files)
+        self._resolve_and_track_source(match.group(1).strip("'\""), parsed, home, seen_files, shell_type="bash")
 
     def _check_source_fish(self, line: str, parsed: _ParsedShellData, home: Path, seen_files: set[Path]) -> None:
         match = _FISH_SOURCE_PATTERN.match(line)
         if not match:
             return
-        self._resolve_and_track_source(match.group(1).strip("'\""), parsed, home, seen_files)
+        self._resolve_and_track_source(match.group(1).strip("'\""), parsed, home, seen_files, shell_type="fish")
 
     def _resolve_and_track_source(
-        self, raw_path: str, parsed: _ParsedShellData, home: Path, seen_files: set[Path]
+        self, raw_path: str, parsed: _ParsedShellData, home: Path, seen_files: set[Path], shell_type: str = "fish"
     ) -> None:
-        """Resolve a sourced file path and add to sourced_files (one level only)."""
+        """Resolve a sourced file path, add to sourced_files, and parse it (one level only)."""
         # Expand ~ and $HOME
         resolved_str = raw_path.replace("$HOME", str(home)).replace("~", str(home))
         try:
@@ -237,6 +237,21 @@ class ShellScanner(BaseScannerPlugin):
 
         seen_files.add(resolved)
         parsed.sourced_files.append(resolved)
+
+        # Parse the sourced file for aliases/env vars (one level — no recursive sourcing)
+        try:
+            content = resolved.read_text()
+        except (PermissionError, OSError):
+            return
+
+        for raw_line in content.splitlines():
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if shell_type == "fish":
+                self._parse_fish_line(stripped, parsed)
+            else:
+                self._parse_posix_line(stripped, parsed)
 
     def _parse_fish_line(self, line: str, parsed: _ParsedShellData) -> None:
         match = _FISH_ALIAS_PATTERN.match(line)
