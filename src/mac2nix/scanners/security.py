@@ -112,9 +112,11 @@ class SecurityScanner(BaseScannerPlugin):
 
     def _check_touch_id_sudo(self) -> bool | None:
         """Check if Touch ID is configured for sudo."""
+        checked_any = False
         for sudo_file in [Path("/etc/pam.d/sudo_local"), Path("/etc/pam.d/sudo")]:
             try:
                 content = sudo_file.read_text()
+                checked_any = True
                 for line in content.splitlines():
                     stripped = line.strip()
                     if stripped.startswith("#"):
@@ -123,7 +125,7 @@ class SecurityScanner(BaseScannerPlugin):
                         return True
             except (PermissionError, OSError):
                 continue
-        return None
+        return False if checked_any else None
 
     def _get_tcc_summary(self) -> dict[str, list[str]]:
         tcc_path = Path.home() / "Library" / "Application Support" / "com.apple.TCC" / "TCC.db"

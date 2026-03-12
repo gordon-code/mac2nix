@@ -80,6 +80,14 @@ class ApplicationsScanner(BaseScannerPlugin):
                 bundle_id: str | None = None
                 version: str | None = None
 
+                # Also check iOS wrapper apps (Wrapper/App.app/Info.plist)
+                if not info_plist.exists():
+                    wrapper_dir = app_path / "Wrapper"
+                    if wrapper_dir.is_dir():
+                        for inner in wrapper_dir.glob("*.app"):
+                            info_plist = inner / "Info.plist"
+                            break
+
                 if info_plist.exists():
                     data = read_plist_safe(info_plist)
                     if isinstance(data, dict):
