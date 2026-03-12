@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
 from pathlib import Path
 
 from mac2nix.models.system import FirewallAppRule, SecurityState
@@ -28,7 +27,6 @@ class SecurityScanner(BaseScannerPlugin):
             sip_enabled=self._check_sip(),
             gatekeeper_enabled=self._check_gatekeeper(),
             firewall_enabled=self._check_firewall(),
-            tcc_summary=self._get_tcc_summary(),
             firewall_stealth_mode=self._check_firewall_stealth(),
             firewall_app_rules=self._get_firewall_app_rules(),
             firewall_block_all_incoming=self._check_firewall_block_all(),
@@ -126,26 +124,6 @@ class SecurityScanner(BaseScannerPlugin):
             except (PermissionError, OSError):
                 continue
         return False if checked_any else None
-
-    def _get_tcc_summary(self) -> dict[str, list[str]]:
-        tcc_path = Path.home() / "Library" / "Application Support" / "com.apple.TCC" / "TCC.db"
-        if not tcc_path.exists():
-            return {}
-
-        try:
-            conn = sqlite3.connect(f"file:{tcc_path}?mode=ro&immutable=1", uri=True)
-            try:
-                cursor = conn.execute("SELECT service, client FROM access WHERE auth_value = 2")
-                summary: dict[str, list[str]] = {}
-                for service, client in cursor.fetchall():
-                    summary.setdefault(service, []).append(client)
-                return summary
-            finally:
-                conn.close()
-        except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
-            # TCC.db is SIP-protected on most macOS versions — expected failure
-            logger.debug("Failed to read TCC database: %s", exc)
-            return {}
 
     def _get_custom_certificates(self) -> list[str]:
         """Discover custom/corporate certificates in System keychain."""

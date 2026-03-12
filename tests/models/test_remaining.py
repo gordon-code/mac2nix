@@ -125,20 +125,16 @@ class TestNetworkConfig:
 
 
 class TestSecurityState:
-    def test_with_tcc_summary(self) -> None:
+    def test_security_state_fields(self) -> None:
         state = SecurityState(
             filevault_enabled=True,
             sip_enabled=True,
             firewall_enabled=False,
             gatekeeper_enabled=True,
-            tcc_summary={
-                "kTCCServiceAccessibility": ["iTerm2", "Hammerspoon"],
-                "kTCCServiceCamera": ["zoom.us"],
-            },
         )
         assert state.filevault_enabled is True
         assert state.firewall_enabled is False
-        assert len(state.tcc_summary["kTCCServiceAccessibility"]) == 2
+        assert state.gatekeeper_enabled is True
 
 
 class TestSystemConfig:

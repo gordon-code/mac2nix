@@ -46,7 +46,6 @@ class SecurityState(BaseModel):
     sip_enabled: bool | None = None
     firewall_enabled: bool | None = None
     gatekeeper_enabled: bool | None = None
-    tcc_summary: dict[str, list[str]] = {}  # service -> list of allowed apps
     firewall_stealth_mode: bool | None = None
     firewall_app_rules: list[FirewallAppRule] = []
     firewall_block_all_incoming: bool | None = None
