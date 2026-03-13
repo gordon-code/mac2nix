@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mac2nix.models.files import AppConfigEntry, AppConfigResult, ConfigFileType
@@ -27,6 +28,35 @@ _EXTENSION_MAP: dict[str, ConfigFileType] = {
     ".sqlite3": ConfigFileType.DATABASE,
 }
 
+_SKIP_DIRS = frozenset(
+    {
+        "Caches",
+        "Cache",
+        "Logs",
+        "logs",
+        "tmp",
+        "temp",
+        "__pycache__",
+        "node_modules",
+        ".git",
+        ".svn",
+        ".hg",
+        "DerivedData",
+        "Build",
+        ".build",
+        "IndexedDB",
+        "GPUCache",
+        "ShaderCache",
+        "Service Worker",
+        "Code Cache",
+        "CachedData",
+        "blob_storage",
+    }
+)
+
+_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+_MAX_FILES_PER_APP = 500
+
 
 @register("app_config")
 class AppConfigScanner(BaseScannerPlugin):
@@ -42,6 +72,17 @@ class AppConfigScanner(BaseScannerPlugin):
             home / "Library" / "Application Support",
             home / "Library" / "Group Containers",
         ]
+
+        # Add Containers app support dirs
+        containers_dir = home / "Library" / "Containers"
+        if containers_dir.is_dir():
+            try:
+                for container in sorted(containers_dir.iterdir()):
+                    app_support = container / "Data" / "Library" / "Application Support"
+                    if app_support.is_dir() and os.access(app_support, os.R_OK):
+                        scan_dirs.append(app_support)
+            except PermissionError:
+                logger.warning("Permission denied reading: %s", containers_dir)
 
         for base_dir in scan_dirs:
             if not base_dir.is_dir():
@@ -63,28 +104,49 @@ class AppConfigScanner(BaseScannerPlugin):
 
     def _scan_app_dir(self, app_dir: Path, entries: list[AppConfigEntry]) -> None:
         app_name = app_dir.name
+        file_count = 0
+
         try:
-            children = sorted(app_dir.iterdir())
+            for dirpath, dirnames, filenames in os.walk(app_dir, followlinks=False):
+                # Prune skipped directories in-place
+                dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+
+                for filename in filenames:
+                    if file_count >= _MAX_FILES_PER_APP:
+                        logger.warning(
+                            "Reached %d file cap for app directory: %s",
+                            _MAX_FILES_PER_APP,
+                            app_dir,
+                        )
+                        return
+
+                    filepath = Path(dirpath) / filename
+                    try:
+                        stat = filepath.stat()
+                    except OSError:
+                        continue
+
+                    # Skip files over 10MB
+                    if stat.st_size > _MAX_FILE_SIZE:
+                        continue
+
+                    ext = filepath.suffix.lower()
+                    file_type = _EXTENSION_MAP.get(ext, ConfigFileType.UNKNOWN)
+                    scannable = file_type != ConfigFileType.DATABASE
+
+                    content_hash = hash_file(filepath) if scannable else None
+                    modified_time = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+
+                    entries.append(
+                        AppConfigEntry(
+                            app_name=app_name,
+                            path=filepath,
+                            file_type=file_type,
+                            content_hash=content_hash,
+                            scannable=scannable,
+                            modified_time=modified_time,
+                        )
+                    )
+                    file_count += 1
         except PermissionError:
             logger.warning("Permission denied reading app config dir: %s", app_dir)
-            return
-
-        for child in children:
-            if not child.is_file():
-                continue
-
-            ext = child.suffix.lower()
-            file_type = _EXTENSION_MAP.get(ext, ConfigFileType.UNKNOWN)
-            scannable = file_type != ConfigFileType.DATABASE
-
-            content_hash = hash_file(child) if scannable else None
-
-            entries.append(
-                AppConfigEntry(
-                    app_name=app_name,
-                    path=child,
-                    file_type=file_type,
-                    content_hash=content_hash,
-                    scannable=scannable,
-                )
-            )

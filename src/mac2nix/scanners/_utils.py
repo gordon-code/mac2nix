@@ -22,18 +22,22 @@ LAUNCHD_DIRS: list[tuple[Path, str]] = [
 ]
 
 
-def _convert_datetimes(obj: Any) -> Any:
-    """Recursively convert datetime values to ISO 8601 strings.
+def convert_datetimes(obj: Any) -> Any:
+    """Recursively convert non-JSON-safe plist values.
 
-    plistlib returns datetime objects for NSDate values, but PreferenceValue
-    does not include datetime in its union type.
+    plistlib returns datetime objects (for NSDate), bytes objects (for NSData),
+    and UID objects that are not JSON-serializable. Convert them to strings/ints.
     """
     if isinstance(obj, datetime):
         return obj.isoformat()
+    if isinstance(obj, bytes):
+        return f"<data:{len(obj)} bytes>"
+    if isinstance(obj, plistlib.UID):
+        return int(obj)
     if isinstance(obj, dict):
-        return {k: _convert_datetimes(v) for k, v in obj.items()}
+        return {k: convert_datetimes(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_convert_datetimes(item) for item in obj]
+        return [convert_datetimes(item) for item in obj]
     return obj
 
 
@@ -63,7 +67,7 @@ def run_command(
         return None
 
 
-def read_plist_safe(path: Path) -> dict[str, Any] | None:
+def read_plist_safe(path: Path) -> dict[str, Any] | list[Any] | None:
     """Read a plist file safely, returning None on failure.
 
     Handles both binary and XML plists. Converts datetime values to ISO strings
@@ -79,7 +83,7 @@ def read_plist_safe(path: Path) -> dict[str, Any] | None:
             logger.warning("Permission denied reading plist: %s", path)
         return None
     except plistlib.InvalidFileException:
-        logger.debug("Invalid plist file: %s", path)
+        logger.warning("Invalid plist file: %s", path)
         return None
     except (ValueError, OverflowError):
         # plistlib can't handle dates like year 0 (Apple's "no date" sentinel).
@@ -92,7 +96,7 @@ def read_plist_safe(path: Path) -> dict[str, Any] | None:
         logger.warning("Failed to read plist %s: %s", path, exc)
         return None
 
-    return _convert_datetimes(data)
+    return convert_datetimes(data)
 
 
 def _read_plist_via_plutil(path: Path) -> dict[str, Any] | None:
@@ -173,7 +177,7 @@ def read_launchd_plists() -> list[tuple[Path, str, dict[str, Any]]]:
             continue
         for plist_path in plist_files:
             data = read_plist_safe(plist_path)
-            if data is not None:
+            if isinstance(data, dict):
                 results.append((plist_path, source_key, data))
     return results
 

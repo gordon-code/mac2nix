@@ -12,7 +12,8 @@ PreferenceValue = str | int | float | bool | bytes | list | dict
 
 class PreferencesDomain(BaseModel):
     domain_name: str  # e.g. "com.apple.dock"
-    source_path: Path  # e.g. ~/Library/Preferences/com.apple.dock.plist
+    source_path: Path | None = None  # e.g. ~/Library/Preferences/com.apple.dock.plist
+    source: str = "disk"  # "disk", "synced", "cfprefsd"
     keys: dict[str, PreferenceValue]
 
 

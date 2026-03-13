@@ -1,6 +1,7 @@
 """Tests for display scanner."""
 
 import json
+import subprocess
 from unittest.mock import patch
 
 from mac2nix.models.hardware import DisplayConfig
@@ -134,6 +135,289 @@ class TestDisplayScanner:
         assert isinstance(result, DisplayConfig)
         assert len(result.monitors) == 1
         assert result.monitors[0].resolution == "1920 x 1080"
+
+    def test_refresh_rate(self, cmd_result) -> None:
+        display_json = {
+            "SPDisplaysDataType": [
+                {
+                    "_name": "GPU",
+                    "spdisplays_ndrvs": [
+                        {
+                            "_name": "ProMotion Display",
+                            "_spdisplays_resolution": "3456 x 2234 Retina",
+                            "_spdisplays_refresh": "120 Hz",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch(
+            "mac2nix.scanners.display.run_command",
+            return_value=cmd_result(json.dumps(display_json)),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.monitors[0].refresh_rate == "120 Hz"
+
+    def test_refresh_rate_fallback_key(self, cmd_result) -> None:
+        display_json = {
+            "SPDisplaysDataType": [
+                {
+                    "_name": "GPU",
+                    "spdisplays_ndrvs": [
+                        {
+                            "_name": "External",
+                            "spdisplays_refresh": "60 Hz",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch(
+            "mac2nix.scanners.display.run_command",
+            return_value=cmd_result(json.dumps(display_json)),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.monitors[0].refresh_rate == "60 Hz"
+
+    def test_color_profile(self, cmd_result) -> None:
+        display_json = {
+            "SPDisplaysDataType": [
+                {
+                    "_name": "GPU",
+                    "spdisplays_ndrvs": [
+                        {
+                            "_name": "Built-in",
+                            "spdisplays_color_profile": "Color LCD",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch(
+            "mac2nix.scanners.display.run_command",
+            return_value=cmd_result(json.dumps(display_json)),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.monitors[0].color_profile == "Color LCD"
+
+    def test_color_profile_fallback_key(self, cmd_result) -> None:
+        display_json = {
+            "SPDisplaysDataType": [
+                {
+                    "_name": "GPU",
+                    "spdisplays_ndrvs": [
+                        {
+                            "_name": "External",
+                            "_spdisplays_color_profile": "sRGB IEC61966-2.1",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch(
+            "mac2nix.scanners.display.run_command",
+            return_value=cmd_result(json.dumps(display_json)),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.monitors[0].color_profile == "sRGB IEC61966-2.1"
+
+    def test_no_refresh_rate_or_color(self, cmd_result) -> None:
+        display_json = {
+            "SPDisplaysDataType": [
+                {
+                    "_name": "GPU",
+                    "spdisplays_ndrvs": [
+                        {
+                            "_name": "Basic Monitor",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch(
+            "mac2nix.scanners.display.run_command",
+            return_value=cmd_result(json.dumps(display_json)),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.monitors[0].refresh_rate is None
+        assert result.monitors[0].color_profile is None
+
+    def test_night_shift_sunset_to_sunrise(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPDisplaysDataType" in cmd:
+                return cmd_result(json.dumps({"SPDisplaysDataType": []}))
+            return None
+
+        with (
+            patch("mac2nix.scanners.display.run_command", side_effect=side_effect),
+            patch(
+                "mac2nix.scanners.display.read_plist_safe",
+                return_value={
+                    "CBBlueReductionStatus": {
+                        "BlueReductionEnabled": 1,
+                        "BlueReductionMode": 1,
+                    }
+                },
+            ),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.night_shift is not None
+        assert result.night_shift.enabled is True
+        assert result.night_shift.schedule == "sunset-to-sunrise"
+
+    def test_night_shift_custom_schedule(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPDisplaysDataType" in cmd:
+                return cmd_result(json.dumps({"SPDisplaysDataType": []}))
+            return None
+
+        with (
+            patch("mac2nix.scanners.display.run_command", side_effect=side_effect),
+            patch(
+                "mac2nix.scanners.display.read_plist_safe",
+                return_value={
+                    "CBBlueReductionStatus": {
+                        "BlueReductionEnabled": 1,
+                        "BlueReductionMode": 2,
+                    }
+                },
+            ),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.night_shift is not None
+        assert result.night_shift.schedule == "custom"
+
+    def test_night_shift_disabled(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPDisplaysDataType" in cmd:
+                return cmd_result(json.dumps({"SPDisplaysDataType": []}))
+            return None
+
+        with (
+            patch("mac2nix.scanners.display.run_command", side_effect=side_effect),
+            patch(
+                "mac2nix.scanners.display.read_plist_safe",
+                return_value={
+                    "CBBlueReductionStatus": {
+                        "BlueReductionEnabled": False,
+                    }
+                },
+            ),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.night_shift is not None
+        assert result.night_shift.enabled is False
+        assert result.night_shift.schedule == "off"
+
+    def test_night_shift_not_available(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPDisplaysDataType" in cmd:
+                return cmd_result(json.dumps({"SPDisplaysDataType": []}))
+            return None
+
+        with (
+            patch("mac2nix.scanners.display.run_command", side_effect=side_effect),
+            patch("mac2nix.scanners.display.read_plist_safe", return_value=None),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.night_shift is None
+
+    def test_night_shift_nested_key(self, cmd_result) -> None:
+        """Test fallback for Night Shift data nested under a user key."""
+
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPDisplaysDataType" in cmd:
+                return cmd_result(json.dumps({"SPDisplaysDataType": []}))
+            return None
+
+        with (
+            patch("mac2nix.scanners.display.run_command", side_effect=side_effect),
+            patch(
+                "mac2nix.scanners.display.read_plist_safe",
+                return_value={
+                    "CBBlueReductionStatus": "not_a_dict",
+                    "user-uuid-1234": {
+                        "CBBlueReductionStatus": {
+                            "BlueReductionEnabled": 1,
+                            "BlueReductionMode": 1,
+                        }
+                    },
+                },
+            ),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.night_shift is not None
+        assert result.night_shift.enabled is True
+        assert result.night_shift.schedule == "sunset-to-sunrise"
+
+    def test_true_tone_enabled(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPDisplaysDataType" in cmd:
+                return cmd_result(json.dumps({"SPDisplaysDataType": []}))
+            if cmd[0] == "defaults":
+                return cmd_result("1\n")
+            return None
+
+        with (
+            patch("mac2nix.scanners.display.run_command", side_effect=side_effect),
+            patch("mac2nix.scanners.display.read_plist_safe", return_value=None),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.true_tone_enabled is True
+
+    def test_true_tone_disabled(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if "SPDisplaysDataType" in cmd:
+                return cmd_result(json.dumps({"SPDisplaysDataType": []}))
+            if cmd[0] == "defaults":
+                return cmd_result("0\n")
+            return None
+
+        with (
+            patch("mac2nix.scanners.display.run_command", side_effect=side_effect),
+            patch("mac2nix.scanners.display.read_plist_safe", return_value=None),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.true_tone_enabled is False
+
+    def test_true_tone_unavailable(self) -> None:
+        with (
+            patch("mac2nix.scanners.display.run_command", return_value=None),
+            patch("mac2nix.scanners.display.read_plist_safe", return_value=None),
+        ):
+            result = DisplayScanner().scan()
+
+        assert isinstance(result, DisplayConfig)
+        assert result.true_tone_enabled is None
 
     def test_returns_display_config(self) -> None:
         with patch("mac2nix.scanners.display.run_command", return_value=None):

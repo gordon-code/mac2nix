@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
+from pathlib import Path
 
-from mac2nix.models.application import BrewCask, BrewFormula, HomebrewState, MasApp
+from mac2nix.models.application import BrewCask, BrewFormula, BrewService, HomebrewState, MasApp
 from mac2nix.scanners._utils import run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
@@ -35,9 +37,27 @@ class HomebrewScanner(BaseScannerPlugin):
         # Enrich with versions from brew list
         versions = self._get_versions()
         formulae = [f.model_copy(update={"version": versions.get(f.name, f.version)}) for f in formulae]
-        casks = [c.model_copy(update={"version": versions.get(c.name, c.version)}) for c in casks]
 
-        return HomebrewState(taps=taps, formulae=formulae, casks=casks, mas_apps=mas_apps)
+        # Enrich cask versions from Caskroom directory
+        cask_versions = self._get_cask_versions()
+        casks = [c.model_copy(update={"version": cask_versions.get(c.name, c.version)}) for c in casks]
+
+        # Mark pinned formulae
+        pinned_names = self._get_pinned()
+        if pinned_names:
+            formulae = [f.model_copy(update={"pinned": f.name in pinned_names}) for f in formulae]
+
+        services = self._get_services()
+        prefix = self._get_prefix()
+
+        return HomebrewState(
+            taps=taps,
+            formulae=formulae,
+            casks=casks,
+            mas_apps=mas_apps,
+            services=services,
+            prefix=prefix,
+        )
 
     def _parse_brewfile(
         self,
@@ -88,11 +108,77 @@ class HomebrewScanner(BaseScannerPlugin):
     def _get_versions(self) -> dict[str, str]:
         """Parse brew list --versions output into name->version dict."""
         result = run_command(["brew", "list", "--versions"])
-        if result is None or result.returncode != 0:
+        if result is None:
             return {}
+        # Parse stdout even on non-zero exit — brew may report errors about
+        # broken cask references while still outputting valid version data.
         versions: dict[str, str] = {}
         for line in result.stdout.splitlines():
             parts = line.split()
-            if len(parts) >= 2:
+            if len(parts) >= 2 and not line.startswith("Error:"):
                 versions[parts[0]] = parts[-1]
         return versions
+
+    @staticmethod
+    def _get_cask_versions() -> dict[str, str]:
+        """Read cask versions from the Caskroom directory structure."""
+        versions: dict[str, str] = {}
+        for caskroom in [Path("/opt/homebrew/Caskroom"), Path("/usr/local/Caskroom")]:
+            if not caskroom.is_dir():
+                continue
+            try:
+                for cask_dir in caskroom.iterdir():
+                    if not cask_dir.is_dir():
+                        continue
+                    # Each cask has version subdirectories; use the latest one
+                    try:
+                        version_dirs = sorted(
+                            (d.name for d in cask_dir.iterdir() if d.is_dir() and d.name != ".metadata"),
+                        )
+                        if version_dirs:
+                            versions[cask_dir.name] = version_dirs[-1]
+                    except PermissionError:
+                        pass
+            except PermissionError:
+                pass
+        return versions
+
+    def _get_pinned(self) -> set[str]:
+        """Get set of pinned formula names."""
+        result = run_command(["brew", "list", "--pinned"])
+        if result is None or result.returncode != 0:
+            return set()
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+    def _get_services(self) -> list[BrewService]:
+        """Parse brew services list via JSON output."""
+        result = run_command(["brew", "services", "list", "--json"])
+        if result is None or result.returncode != 0:
+            return []
+
+        try:
+            data = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+        services: list[BrewService] = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            status = entry.get("status")
+            if not name or not status:
+                continue
+            user = entry.get("user") or None
+            file_path = entry.get("file") or None
+            plist_path = Path(file_path) if file_path else None
+            services.append(BrewService(name=name, status=status, user=user, plist_path=plist_path))
+        return services
+
+    def _get_prefix(self) -> str | None:
+        """Get Homebrew prefix path."""
+        result = run_command(["brew", "--prefix"])
+        if result is None or result.returncode != 0:
+            return None
+        prefix = result.stdout.strip()
+        return prefix or None
