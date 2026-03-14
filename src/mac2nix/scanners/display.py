@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 @register("display")
 class DisplayScanner(BaseScannerPlugin):
+    def __init__(self, prefetched_data: dict[str, Any] | None = None) -> None:
+        """Initialise the display scanner.
+
+        Args:
+            prefetched_data: Pre-parsed JSON dict from a batched system_profiler call.
+                When provided, the scanner skips its own system_profiler invocation.
+                Must contain the ``SPDisplaysDataType`` key. Defaults to ``None``
+                (the scanner fetches data itself).
+        """
+        self._prefetched_data = prefetched_data
+
     @property
     def name(self) -> str:
         return "display"
@@ -26,15 +37,18 @@ class DisplayScanner(BaseScannerPlugin):
         return shutil.which("system_profiler") is not None
 
     def scan(self) -> DisplayConfig:
-        result = run_command(["system_profiler", "SPDisplaysDataType", "-json"], timeout=15)
-        if result is None or result.returncode != 0:
-            return DisplayConfig()
+        if self._prefetched_data is not None:
+            data = self._prefetched_data
+        else:
+            result = run_command(["system_profiler", "SPDisplaysDataType", "-json"], timeout=15)
+            if result is None or result.returncode != 0:
+                return DisplayConfig()
 
-        try:
-            data = json.loads(result.stdout)
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("Failed to parse system_profiler display output")
-            return DisplayConfig()
+            try:
+                data = json.loads(result.stdout)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Failed to parse system_profiler display output")
+                return DisplayConfig()
 
         monitors: list[Monitor] = []
         gpu_list = data.get("SPDisplaysDataType", [])

@@ -15,6 +15,53 @@ from xml.etree import ElementTree
 
 logger = logging.getLogger(__name__)
 
+WALK_SKIP_DIRS = frozenset(
+    {
+        # Caches & transient data
+        "Caches",
+        "Cache",
+        "cache",
+        ".cache",
+        "GPUCache",
+        "ShaderCache",
+        "Code Cache",
+        "CachedData",
+        "Service Worker",
+        "blob_storage",
+        "IndexedDB",
+        "GrShaderCache",
+        "component_crx_cache",
+        # Logs
+        "Logs",
+        "logs",
+        "log",
+        # VCS
+        ".git",
+        ".svn",
+        ".hg",
+        # Build artifacts & dependency trees
+        "node_modules",
+        "__pycache__",
+        ".tox",
+        ".nox",
+        "DerivedData",
+        "Build",
+        ".build",
+        "build",
+        "target",
+        "dist",
+        ".next",
+        ".nuxt",
+        # Temp
+        "tmp",
+        "temp",
+        ".tmp",
+        # Trash
+        ".Trash",
+        ".Trashes",
+    }
+)
+
 LAUNCHD_DIRS: list[tuple[Path, str]] = [
     (Path.home() / "Library" / "LaunchAgents", "user"),
     (Path("/Library/LaunchAgents"), "system"),
