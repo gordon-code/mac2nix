@@ -1,7 +1,8 @@
-"""Library audit scanner — discovers uncovered ~/Library and /Library content."""
+"""Library scanner — discovers ~/Library content, app configs, and system bundles."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
@@ -10,25 +11,49 @@ from pathlib import Path
 from typing import Any
 
 from mac2nix.models.files import (
+    AppConfigEntry,
     BundleEntry,
+    ConfigFileType,
     KeyBindingEntry,
-    LibraryAuditResult,
     LibraryDirEntry,
     LibraryFileEntry,
+    LibraryResult,
     WorkflowEntry,
 )
-from mac2nix.scanners._utils import hash_file, read_plist_safe, run_command
+from mac2nix.scanners._utils import WALK_SKIP_DIRS, hash_file, read_plist_safe, run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
 
+# --- App config constants ---
+
+_EXTENSION_MAP: dict[str, ConfigFileType] = {
+    ".json": ConfigFileType.JSON,
+    ".plist": ConfigFileType.PLIST,
+    ".toml": ConfigFileType.TOML,
+    ".yaml": ConfigFileType.YAML,
+    ".yml": ConfigFileType.YAML,
+    ".xml": ConfigFileType.XML,
+    ".conf": ConfigFileType.CONF,
+    ".cfg": ConfigFileType.CONF,
+    ".ini": ConfigFileType.CONF,
+    ".sqlite": ConfigFileType.DATABASE,
+    ".db": ConfigFileType.DATABASE,
+    ".sqlite3": ConfigFileType.DATABASE,
+}
+
+_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+_MAX_FILES_PER_APP = 500
+
+# --- Library audit constants ---
+
 _COVERED_DIRS: dict[str, str] = {
     "Preferences": "preferences",
-    "Application Support": "app_config",
+    "Application Support": "library",
     "Fonts": "fonts",
     "LaunchAgents": "launch_agents",
-    "Containers": "preferences+app_config",
-    "Group Containers": "app_config",
+    "Containers": "preferences+library",
+    "Group Containers": "library",
     "FontCollections": "fonts",
     "SyncedPreferences": "preferences",
 }
@@ -52,7 +77,8 @@ _TRANSIENT_DIRS = frozenset(
 
 _SENSITIVE_KEY_PATTERNS = {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"}
 
-_MAX_FILES_PER_DIR = 200
+_MAX_FILES_PER_DIR = 1000
+_MAX_SCRIPTS = 50
 
 _SYSTEM_SCAN_PATTERNS: dict[str, str] = {
     "Extensions": "*.kext",
@@ -87,32 +113,37 @@ def _redact_sensitive_keys(data: dict[str, Any]) -> None:
                     _redact_sensitive_keys(item)
 
 
-@register("library_audit")
-class LibraryAuditScanner(BaseScannerPlugin):
+@register("library")
+class LibraryScanner(BaseScannerPlugin):
     @property
     def name(self) -> str:
-        return "library_audit"
+        return "library"
 
-    def scan(self) -> LibraryAuditResult:
-        home_lib = Path.home() / "Library"
+    def scan(self) -> LibraryResult:
+        home = Path.home()
+        home_lib = home / "Library"
+
+        # --- Library directory audit ---
         directories = self._audit_directories(home_lib)
         uncovered_files: list[LibraryFileEntry] = []
         workflows: list[WorkflowEntry] = []
+        bundles: list[BundleEntry] = []
         key_bindings = self._scan_key_bindings(home_lib)
         spelling_words, spelling_dicts = self._scan_spelling(home_lib)
         text_replacements = self._scan_text_replacements(home_lib)
         input_methods = self._scan_bundles_in_dir(home_lib / "Input Methods")
-        keyboard_layouts = self._scan_file_hashes(home_lib / "Keyboard Layouts", ".keylayout")
-        color_profiles = self._scan_file_hashes(home_lib / "ColorSync" / "Profiles", ".icc", ".icm")
-        compositions = self._scan_file_hashes(home_lib / "Compositions", ".qtz")
+        keyboard_layouts = self._list_files_by_extension(home_lib / "Keyboard Layouts", ".keylayout")
+        color_profiles = self._list_files_by_extension(home_lib / "ColorSync" / "Profiles", ".icc", ".icm")
+        compositions = self._list_files_by_extension(home_lib / "Compositions", ".qtz")
         scripts = self._scan_scripts(home_lib)
 
-        # Capture uncovered files and workflows from uncovered directories
+        # Capture uncovered files, workflows, and bundles from uncovered directories
         for d in directories:
             if d.covered_by_scanner is None and d.name not in _TRANSIENT_DIRS:
-                files, wf = self._capture_uncovered_dir(d.path)
+                files, wf, bdl = self._capture_uncovered_dir(d.path)
                 uncovered_files.extend(files)
                 workflows.extend(wf)
+                bundles.extend(bdl)
 
         # Scan workflows from known Workflows/Services dirs
         for wf_dir_name in ["Workflows", "Services"]:
@@ -120,9 +151,15 @@ class LibraryAuditScanner(BaseScannerPlugin):
             if wf_dir.is_dir():
                 workflows.extend(self._scan_workflows(wf_dir))
 
+        # --- App config scanning ---
+        entries = self._scan_app_configs(home_lib)
+
+        # --- system library bundles ---
         system_bundles = self._scan_system_library()
 
-        return LibraryAuditResult(
+        return LibraryResult(
+            app_configs=entries,
+            bundles=bundles,
             directories=directories,
             uncovered_files=uncovered_files,
             workflows=workflows,
@@ -137,6 +174,93 @@ class LibraryAuditScanner(BaseScannerPlugin):
             text_replacements=text_replacements,
             system_bundles=system_bundles,
         )
+
+    # --- App config scanning ---
+
+    def _scan_app_configs(self, home_lib: Path) -> list[AppConfigEntry]:
+        """Walk Application Support, Group Containers, and Containers for app configs."""
+        entries: list[AppConfigEntry] = []
+
+        scan_dirs = [
+            home_lib / "Application Support",
+            home_lib / "Group Containers",
+        ]
+
+        # Add Containers app support dirs
+        containers_dir = home_lib / "Containers"
+        if containers_dir.is_dir():
+            try:
+                for container in sorted(containers_dir.iterdir()):
+                    app_support = container / "Data" / "Library" / "Application Support"
+                    if app_support.is_dir() and os.access(app_support, os.R_OK):
+                        scan_dirs.append(app_support)
+            except PermissionError:
+                logger.warning("Permission denied reading: %s", containers_dir)
+
+        for base_dir in scan_dirs:
+            if not base_dir.is_dir():
+                continue
+            try:
+                app_dirs = sorted(base_dir.iterdir())
+            except PermissionError:
+                logger.warning("Permission denied reading: %s", base_dir)
+                continue
+            for app_dir in app_dirs:
+                if not app_dir.is_dir():
+                    continue
+                if not os.access(app_dir, os.R_OK):
+                    logger.debug("Skipping TCC-protected directory: %s", app_dir)
+                    continue
+                self._scan_app_dir(app_dir, entries)
+
+        return entries
+
+    def _scan_app_dir(self, app_dir: Path, entries: list[AppConfigEntry]) -> None:
+        app_name = app_dir.name
+        file_count = 0
+
+        try:
+            for dirpath, dirnames, filenames in os.walk(app_dir, followlinks=False):
+                # Prune skipped directories in-place
+                dirnames[:] = [d for d in dirnames if d not in WALK_SKIP_DIRS]
+
+                for filename in filenames:
+                    if file_count >= _MAX_FILES_PER_APP:
+                        logger.info("Reached %d file cap for app: %s", _MAX_FILES_PER_APP, app_name)
+                        return
+
+                    filepath = Path(dirpath) / filename
+                    try:
+                        stat = filepath.stat()
+                    except OSError:
+                        continue
+
+                    # Skip files over 10MB
+                    if stat.st_size > _MAX_FILE_SIZE:
+                        continue
+
+                    ext = filepath.suffix.lower()
+                    file_type = _EXTENSION_MAP.get(ext, ConfigFileType.UNKNOWN)
+                    scannable = file_type != ConfigFileType.DATABASE
+
+                    content_hash = hash_file(filepath) if scannable else None
+                    modified_time = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+
+                    entries.append(
+                        AppConfigEntry(
+                            app_name=app_name,
+                            path=filepath,
+                            file_type=file_type,
+                            content_hash=content_hash,
+                            scannable=scannable,
+                            modified_time=modified_time,
+                        )
+                    )
+                    file_count += 1
+        except PermissionError:
+            logger.warning("Permission denied reading app config dir: %s", app_dir)
+
+    # --- Library audit scanning ---
 
     def _audit_directories(self, lib_path: Path) -> list[LibraryDirEntry]:
         """Walk top-level ~/Library directories and collect metadata."""
@@ -174,6 +298,8 @@ class LibraryAuditScanner(BaseScannerPlugin):
             total_size = 0
             newest = 0.0
             for entry in path.iterdir():
+                if entry.is_symlink():
+                    continue
                 try:
                     st = entry.stat()
                     file_count += 1
@@ -186,44 +312,44 @@ class LibraryAuditScanner(BaseScannerPlugin):
         except PermissionError:
             return None, None, None
 
-    def _capture_uncovered_dir(self, dir_path: Path) -> tuple[list[LibraryFileEntry], list[WorkflowEntry]]:
-        """Capture files from an uncovered directory (capped)."""
+    def _capture_uncovered_dir(
+        self, dir_path: Path
+    ) -> tuple[list[LibraryFileEntry], list[WorkflowEntry], list[BundleEntry]]:
+        """Capture files, workflows, and bundles from an uncovered directory."""
         files: list[LibraryFileEntry] = []
         workflows: list[WorkflowEntry] = []
+        bundles: list[BundleEntry] = []
         count = 0
 
         try:
             for dirpath, dirnames, filenames in os.walk(dir_path, followlinks=False):
                 for filename in filenames:
                     if count >= _MAX_FILES_PER_DIR:
-                        logger.warning(
-                            "Reached %d file cap for directory: %s",
-                            _MAX_FILES_PER_DIR,
-                            dir_path,
-                        )
-                        return files, workflows
+                        logger.info("Reached %d file cap for directory: %s", _MAX_FILES_PER_DIR, dir_path)
+                        return files, workflows, bundles
                     filepath = Path(dirpath) / filename
+                    count += 1
                     entry = self._classify_file(filepath)
                     if entry is not None:
                         files.append(entry)
-                    count += 1
-                # Check dirnames for workflow bundles (they're directories, not files)
-                # and prune them + transient/cache subdirectories in a single pass
-                _skip = {"Caches", "Cache", "Logs", "tmp", "__pycache__"}
+                # Check dirnames for workflow/bundle directories
+                # and prune known non-config directories in a single pass
                 kept: list[str] = []
                 for dirname in dirnames:
+                    sub_path = Path(dirpath) / dirname
                     if dirname.endswith(".workflow"):
-                        wf_path = Path(dirpath) / dirname
-                        wf = self._parse_workflow(wf_path)
+                        wf = self._parse_workflow(sub_path)
                         if wf is not None:
                             workflows.append(wf)
-                    elif dirname not in _skip:
+                    elif any(dirname.endswith(ext) for ext in _BUNDLE_EXTENSIONS):
+                        bundles.append(self._parse_bundle(sub_path))
+                    elif dirname not in WALK_SKIP_DIRS:
                         kept.append(dirname)
                 dirnames[:] = kept
         except PermissionError:
             logger.warning("Permission denied walking: %s", dir_path)
 
-        return files, workflows
+        return files, workflows, bundles
 
     def _classify_file(self, filepath: Path) -> LibraryFileEntry | None:
         """Classify and capture a file from an uncovered directory."""
@@ -235,26 +361,29 @@ class LibraryAuditScanner(BaseScannerPlugin):
         size = stat.st_size
         suffix = filepath.suffix.lower()
         file_type = suffix.lstrip(".") if suffix else "unknown"
-        content_hash = hash_file(filepath)
         plist_content: dict[str, Any] | None = None
         text_content: str | None = None
-        strategy = "hash_only"
+        content_hash: str | None = None
 
+        # Only do expensive IO on known config file types
         if suffix == ".plist":
             raw_plist = read_plist_safe(filepath)
             if isinstance(raw_plist, dict):
                 plist_content = raw_plist
                 _redact_sensitive_keys(plist_content)
-                strategy = "plist_capture"
-        elif suffix in {".txt", ".md", ".cfg", ".conf", ".ini", ".yaml", ".yml", ".json", ".xml"}:
+            content_hash = hash_file(filepath)
+            strategy = "plist_capture" if plist_content else "hash_only"
+        elif suffix in {".txt", ".md", ".cfg", ".conf", ".ini", ".yaml", ".yml", ".json", ".xml", ".toml"}:
+            content_hash = hash_file(filepath)
             if size < 65536:
-                try:
+                with contextlib.suppress(OSError):
                     text_content = filepath.read_text(errors="replace")
-                    strategy = "text_capture"
-                except OSError:
-                    pass
+            strategy = "text_capture" if text_content else "hash_only"
         elif suffix in _BUNDLE_EXTENSIONS:
             strategy = "bundle"
+        else:
+            # Non-config file: record path + size only, no IO
+            strategy = "metadata_only"
 
         return LibraryFileEntry(
             path=filepath,
@@ -355,6 +484,7 @@ class LibraryAuditScanner(BaseScannerPlugin):
         if doc_plist.is_file():
             raw = read_plist_safe(doc_plist)
             if isinstance(raw, dict):
+                _redact_sensitive_keys(raw)
                 definition = raw
 
         return WorkflowEntry(
@@ -371,33 +501,15 @@ class LibraryAuditScanner(BaseScannerPlugin):
         bundles: list[BundleEntry] = []
         try:
             for item in sorted(dir_path.iterdir()):
-                if not item.is_dir():
+                if item.is_symlink() or not item.is_dir():
                     continue
-                info_plist = item / "Contents" / "Info.plist"
-                if not info_plist.is_file():
-                    info_plist = item / "Info.plist"
-                bundle_id: str | None = None
-                version: str | None = None
-                if info_plist.is_file():
-                    data = read_plist_safe(info_plist)
-                    if isinstance(data, dict):
-                        bundle_id = data.get("CFBundleIdentifier")
-                        version = data.get("CFBundleShortVersionString")
-                bundles.append(
-                    BundleEntry(
-                        name=item.name,
-                        path=item,
-                        bundle_id=bundle_id,
-                        version=version,
-                        bundle_type=item.suffix.lstrip(".") if item.suffix else None,
-                    )
-                )
+                bundles.append(self._parse_bundle(item))
         except PermissionError:
             logger.debug("Permission denied reading: %s", dir_path)
         return bundles
 
     @staticmethod
-    def _scan_file_hashes(dir_path: Path, *extensions: str) -> list[str]:
+    def _list_files_by_extension(dir_path: Path, *extensions: str) -> list[str]:
         """Scan files in a directory and return their names."""
         if not dir_path.is_dir():
             return []
@@ -419,6 +531,9 @@ class LibraryAuditScanner(BaseScannerPlugin):
         scripts: list[str] = []
         try:
             for f in sorted(scripts_dir.iterdir()):
+                if len(scripts) >= _MAX_SCRIPTS:
+                    logger.info("Reached %d script cap for: %s", _MAX_SCRIPTS, scripts_dir)
+                    break
                 if f.is_file():
                     if f.suffix == ".scpt":
                         # Try to decompile AppleScript
@@ -449,9 +564,7 @@ class LibraryAuditScanner(BaseScannerPlugin):
             try:
                 for item in sorted(scan_dir.glob(pattern)):
                     if item.is_dir():
-                        bundle = self._parse_system_bundle(item)
-                        if bundle is not None:
-                            bundles.append(bundle)
+                        bundles.append(self._parse_bundle(item))
             except PermissionError:
                 logger.debug("Permission denied reading: %s", scan_dir)
 
@@ -475,16 +588,14 @@ class LibraryAuditScanner(BaseScannerPlugin):
                 if subdir.is_dir():
                     for item in sorted(subdir.iterdir()):
                         if item.is_dir() and item.suffix in _BUNDLE_EXTENSIONS:
-                            bundle = self._parse_system_bundle(item)
-                            if bundle is not None:
-                                bundles.append(bundle)
+                            bundles.append(self._parse_bundle(item))
         except PermissionError:
             pass
         return bundles
 
     @staticmethod
-    def _parse_system_bundle(item: Path) -> BundleEntry | None:
-        """Parse a system-level bundle."""
+    def _parse_bundle(item: Path) -> BundleEntry:
+        """Parse a bundle directory, reading Info.plist for metadata."""
         info_plist = item / "Contents" / "Info.plist"
         if not info_plist.is_file():
             info_plist = item / "Info.plist"

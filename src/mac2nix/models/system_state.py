@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from mac2nix.models.application import ApplicationsResult, HomebrewState
-from mac2nix.models.files import AppConfigResult, DotfilesResult, FontsResult, LibraryAuditResult
+from mac2nix.models.files import DotfilesResult, FontsResult, LibraryResult
 from mac2nix.models.hardware import AudioConfig, DisplayConfig
 from mac2nix.models.package_managers import (
     ContainersResult,
@@ -37,7 +37,6 @@ class SystemState(BaseModel):
     applications: ApplicationsResult | None = None
     homebrew: HomebrewState | None = None
     dotfiles: DotfilesResult | None = None
-    app_config: AppConfigResult | None = None
     fonts: FontsResult | None = None
     launch_agents: LaunchAgentsResult | None = None
     shell: ShellConfig | None = None
@@ -47,7 +46,7 @@ class SystemState(BaseModel):
     display: DisplayConfig | None = None
     audio: AudioConfig | None = None
     cron: ScheduledTasks | None = None
-    library_audit: LibraryAuditResult | None = None
+    library: LibraryResult | None = None
     nix_state: NixState | None = None
     version_managers: VersionManagersResult | None = None
     package_managers: PackageManagersResult | None = None

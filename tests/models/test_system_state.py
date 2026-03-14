@@ -7,7 +7,7 @@ from pathlib import Path
 from mac2nix.models import (
     BrewFormula,
     HomebrewState,
-    LibraryAuditResult,
+    LibraryResult,
     PreferencesDomain,
     PreferencesResult,
     SystemState,
@@ -104,23 +104,23 @@ class TestSystemState:
         assert restored.homebrew is not None
         assert len(restored.homebrew.formulae) == 2
 
-    def test_library_audit_field(self):
+    def test_library_field(self):
         state = SystemState(
             hostname="test-mac",
             macos_version="15.3",
             architecture="arm64",
-            library_audit=LibraryAuditResult(
+            library=LibraryResult(
                 spelling_words=["nix", "darwin"],
                 keyboard_layouts=["US"],
             ),
         )
-        assert state.library_audit is not None
-        assert state.library_audit.spelling_words == ["nix", "darwin"]
+        assert state.library is not None
+        assert state.library.spelling_words == ["nix", "darwin"]
 
-    def test_library_audit_default_none(self):
+    def test_library_default_none(self):
         state = SystemState(
             hostname="test-mac",
             macos_version="15.3",
             architecture="arm64",
         )
-        assert state.library_audit is None
+        assert state.library is None

@@ -7,12 +7,14 @@ from pathlib import Path
 
 from mac2nix.models.application import BinarySource, BrewService, PathBinary
 from mac2nix.models.files import (
+    AppConfigEntry,
     BundleEntry,
+    ConfigFileType,
     DotfileEntry,
     DotfileManager,
     FontCollection,
-    LibraryAuditResult,
     LibraryFileEntry,
+    LibraryResult,
     WorkflowEntry,
 )
 from mac2nix.models.hardware import AudioConfig, AudioDevice, DisplayConfig, Monitor, NightShiftConfig
@@ -371,9 +373,10 @@ class TestLaunchdScheduledJob:
         assert job.trigger_type == "calendar"
 
 
-class TestLibraryAuditResult:
+class TestLibraryResult:
     def test_all_defaults_empty(self) -> None:
-        result = LibraryAuditResult()
+        result = LibraryResult()
+        assert result.app_configs == []
         assert result.bundles == []
         assert result.directories == []
         assert result.uncovered_files == []
@@ -390,15 +393,44 @@ class TestLibraryAuditResult:
         assert result.system_bundles == []
 
     def test_with_populated_fields(self) -> None:
-        result = LibraryAuditResult(
+        result = LibraryResult(
+            app_configs=[
+                AppConfigEntry(
+                    app_name="iTerm2",
+                    path=Path("~/Library/Application Support/iTerm2/settings.json"),
+                    file_type=ConfigFileType.JSON,
+                ),
+            ],
             bundles=[BundleEntry(name="Test.bundle", path=Path("/Library/Bundles/Test.bundle"))],
             spelling_words=["nix", "darwin"],
             keyboard_layouts=["US", "Dvorak"],
             text_replacements=[{"shortcut": "omw", "phrase": "On my way!"}],
         )
+        assert len(result.app_configs) == 1
+        assert result.app_configs[0].app_name == "iTerm2"
         assert len(result.bundles) == 1
         assert result.spelling_words == ["nix", "darwin"]
         assert len(result.text_replacements) == 1
+
+    def test_json_roundtrip_with_app_configs(self) -> None:
+        original = LibraryResult(
+            app_configs=[
+                AppConfigEntry(
+                    app_name="iTerm2",
+                    app_bundle_id="com.googlecode.iterm2",
+                    path=Path("~/Library/Application Support/iTerm2/settings.json"),
+                    file_type=ConfigFileType.JSON,
+                    content_hash="abc123",
+                ),
+            ],
+            spelling_words=["nix"],
+        )
+        json_str = original.model_dump_json()
+        restored = LibraryResult.model_validate_json(json_str)
+        assert len(restored.app_configs) == 1
+        assert restored.app_configs[0].app_name == "iTerm2"
+        assert restored.app_configs[0].file_type == ConfigFileType.JSON
+        assert restored.spelling_words == ["nix"]
 
 
 class TestBundleEntry:

@@ -1,10 +1,9 @@
-"""Tests for dotfile, app_config, and font models."""
+"""Tests for dotfile, app config entry, and font models."""
 
 from pathlib import Path
 
 from mac2nix.models.files import (
     AppConfigEntry,
-    AppConfigResult,
     ConfigFileType,
     DotfileEntry,
     DotfileManager,
@@ -90,42 +89,6 @@ class TestAppConfigEntry:
         assert entry.file_type == ConfigFileType.UNKNOWN
         assert entry.content_hash is None
         assert entry.scannable is True
-
-
-class TestAppConfigResult:
-    def test_with_entries(self):
-        entries = [
-            AppConfigEntry(
-                app_name="VSCode",
-                path=Path("~/Library/Application Support/Code/settings.json"),
-                file_type=ConfigFileType.JSON,
-            ),
-            AppConfigEntry(
-                app_name="Safari",
-                path=Path("~/Library/Safari/History.db"),
-                file_type=ConfigFileType.DATABASE,
-                scannable=False,
-            ),
-        ]
-        result = AppConfigResult(entries=entries)
-        assert len(result.entries) == 2
-
-    def test_json_roundtrip(self):
-        original = AppConfigResult(
-            entries=[
-                AppConfigEntry(
-                    app_name="iTerm2",
-                    app_bundle_id="com.googlecode.iterm2",
-                    path=Path("~/Library/Preferences/com.googlecode.iterm2.plist"),
-                    file_type=ConfigFileType.PLIST,
-                    content_hash="def456",
-                ),
-            ],
-        )
-        json_str = original.model_dump_json()
-        restored = AppConfigResult.model_validate_json(json_str)
-        assert restored.entries[0].app_name == "iTerm2"
-        assert restored.entries[0].file_type == ConfigFileType.PLIST
 
 
 class TestFontEntry:
