@@ -15,6 +15,53 @@ from xml.etree import ElementTree
 
 logger = logging.getLogger(__name__)
 
+WALK_SKIP_DIRS = frozenset(
+    {
+        # Caches & transient data
+        "Caches",
+        "Cache",
+        "cache",
+        ".cache",
+        "GPUCache",
+        "ShaderCache",
+        "Code Cache",
+        "CachedData",
+        "Service Worker",
+        "blob_storage",
+        "IndexedDB",
+        "GrShaderCache",
+        "component_crx_cache",
+        # Logs
+        "Logs",
+        "logs",
+        "log",
+        # VCS
+        ".git",
+        ".svn",
+        ".hg",
+        # Build artifacts & dependency trees
+        "node_modules",
+        "__pycache__",
+        ".tox",
+        ".nox",
+        "DerivedData",
+        "Build",
+        ".build",
+        "build",
+        "target",
+        "dist",
+        ".next",
+        ".nuxt",
+        # Temp
+        "tmp",
+        "temp",
+        ".tmp",
+        # Trash
+        ".Trash",
+        ".Trashes",
+    }
+)
+
 LAUNCHD_DIRS: list[tuple[Path, str]] = [
     (Path.home() / "Library" / "LaunchAgents", "user"),
     (Path("/Library/LaunchAgents"), "system"),
@@ -22,7 +69,7 @@ LAUNCHD_DIRS: list[tuple[Path, str]] = [
 ]
 
 
-def convert_datetimes(obj: Any) -> Any:
+def sanitize_plist_values(obj: Any) -> Any:
     """Recursively convert non-JSON-safe plist values.
 
     plistlib returns datetime objects (for NSDate), bytes objects (for NSData),
@@ -35,9 +82,9 @@ def convert_datetimes(obj: Any) -> Any:
     if isinstance(obj, plistlib.UID):
         return int(obj)
     if isinstance(obj, dict):
-        return {k: convert_datetimes(v) for k, v in obj.items()}
+        return {k: sanitize_plist_values(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [convert_datetimes(item) for item in obj]
+        return [sanitize_plist_values(item) for item in obj]
     return obj
 
 
@@ -96,7 +143,7 @@ def read_plist_safe(path: Path) -> dict[str, Any] | list[Any] | None:
         logger.warning("Failed to read plist %s: %s", path, exc)
         return None
 
-    return convert_datetimes(data)
+    return sanitize_plist_values(data)
 
 
 def _read_plist_via_plutil(path: Path) -> dict[str, Any] | None:

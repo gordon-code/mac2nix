@@ -35,7 +35,25 @@ _SENSITIVE_EXACT_KEYS = {"access-tokens", "netrc-file"}
 _PACKAGE_CAP = 500
 _ADJACENT_CAP = 50
 _ADJACENT_MAX_DEPTH = 2
-_PRUNE_DIRS = {".git", "node_modules", ".direnv", "__pycache__", ".venv"}
+_PRUNE_DIRS = {
+    # VCS / build
+    ".git",
+    "node_modules",
+    ".direnv",
+    "__pycache__",
+    ".venv",
+    # macOS non-project directories (avoid wasting IO at depth 0-1)
+    "Library",
+    "Applications",
+    "Downloads",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Public",
+    ".Trash",
+    ".cache",
+    ".local",
+}
 _SYSTEM_NIX_CONF = Path("/etc/nix/nix.conf")
 
 _VERSION_RE = re.compile(r"(\d+\.\d+[\w.]*)")

@@ -28,6 +28,16 @@ _SENSITIVE_ENV_PATTERNS = {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIA
 
 @register("launch_agents")
 class LaunchAgentsScanner(BaseScannerPlugin):
+    def __init__(self, launchd_plists: list[tuple[Path, str, dict[str, Any]]] | None = None) -> None:
+        """Initialise the launch agents scanner.
+
+        Args:
+            launchd_plists: Pre-computed launchd plist tuples as returned by
+                ``read_launchd_plists()``. When provided, the scanner skips its own
+                disk read. Defaults to ``None`` (the scanner reads plists itself).
+        """
+        self._launchd_plists = launchd_plists
+
     @property
     def name(self) -> str:
         return "launch_agents"
@@ -35,8 +45,9 @@ class LaunchAgentsScanner(BaseScannerPlugin):
     def scan(self) -> LaunchAgentsResult:
         entries: list[LaunchAgentEntry] = []
 
+        plists = self._launchd_plists if self._launchd_plists is not None else read_launchd_plists()
         # Scan plist directories using shared reader
-        for plist_path, source_key, data in read_launchd_plists():
+        for plist_path, source_key, data in plists:
             source = _SOURCE_MAP[source_key]
             entry = self._parse_agent_data(plist_path, source, data)
             if entry is not None:
@@ -63,10 +74,16 @@ class LaunchAgentsScanner(BaseScannerPlugin):
         program_arguments = data.get("ProgramArguments", [])
         run_at_load = data.get("RunAtLoad", False)
 
-        # Deep copy data for raw_plist to avoid mutating the shared cache
+        # Deep copy to avoid mutating the shared prefetch data
         raw_plist = copy.deepcopy(data)
-        # Redact sensitive environment variables in raw_plist
-        self._redact_sensitive_env(raw_plist)
+        env_raw = data.get("EnvironmentVariables")
+        if isinstance(env_raw, dict):
+            redacted = {
+                k: "***REDACTED***" if any(p in k.upper() for p in _SENSITIVE_ENV_PATTERNS) else v
+                for k, v in env_raw.items()
+            }
+            if redacted != env_raw:
+                raw_plist["EnvironmentVariables"] = redacted
 
         # Extract filtered environment variables
         env_vars = data.get("EnvironmentVariables")
@@ -103,23 +120,13 @@ class LaunchAgentsScanner(BaseScannerPlugin):
             group_name=data.get("GroupName"),
         )
 
-    @staticmethod
-    def _redact_sensitive_env(plist: dict[str, Any]) -> None:
-        """Redact sensitive keys from EnvironmentVariables in the plist dict."""
-        env_vars = plist.get("EnvironmentVariables")
-        if not isinstance(env_vars, dict):
-            return
-        for key in list(env_vars.keys()):
-            if any(p in key.upper() for p in _SENSITIVE_ENV_PATTERNS):
-                env_vars[key] = "***REDACTED***"
-
     def _get_login_items(self) -> list[LaunchAgentEntry]:
         """Parse login items from sfltool dumpbtm text output.
 
         Filters to the current user's UID section and extracts items
         with type "login item".
         """
-        result = run_command(["sfltool", "dumpbtm"])
+        result = run_command(["sfltool", "dumpbtm"], timeout=15)
         if result is None or result.returncode != 0:
             return []
 

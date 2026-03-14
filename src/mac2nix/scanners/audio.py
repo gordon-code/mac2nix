@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from typing import Any
 
 from mac2nix.models.hardware import AudioConfig, AudioDevice
 from mac2nix.scanners._utils import run_command
@@ -29,6 +30,17 @@ def _parse_float(value: str) -> float | None:
 
 @register("audio")
 class AudioScanner(BaseScannerPlugin):
+    def __init__(self, prefetched_data: dict[str, Any] | None = None) -> None:
+        """Initialise the audio scanner.
+
+        Args:
+            prefetched_data: Pre-parsed JSON dict from a batched system_profiler call.
+                When provided, the scanner skips its own system_profiler invocation.
+                Must contain the ``SPAudioDataType`` key. Defaults to ``None``
+                (the scanner fetches data itself).
+        """
+        self._prefetched_data = prefetched_data
+
     @property
     def name(self) -> str:
         return "audio"
@@ -51,17 +63,24 @@ class AudioScanner(BaseScannerPlugin):
             output_muted=output_muted,
         )
 
+    def _load_audio_data(self) -> dict[str, Any] | None:
+        """Return parsed SPAudio JSON, from prefetch or a fresh subprocess call."""
+        if self._prefetched_data is not None:
+            return self._prefetched_data
+        result = run_command(["system_profiler", "SPAudioDataType", "-json"], timeout=15)
+        if result is None or result.returncode != 0:
+            return None
+        try:
+            return json.loads(result.stdout)  # type: ignore[no-any-return]
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("Failed to parse system_profiler audio output")
+            return None
+
     def _get_audio_devices(
         self,
     ) -> tuple[list[AudioDevice], list[AudioDevice], str | None, str | None]:
-        result = run_command(["system_profiler", "SPAudioDataType", "-json"], timeout=15)
-        if result is None or result.returncode != 0:
-            return [], [], None, None
-
-        try:
-            data = json.loads(result.stdout)
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("Failed to parse system_profiler audio output")
+        data = self._load_audio_data()
+        if data is None:
             return [], [], None, None
 
         input_devices: list[AudioDevice] = []

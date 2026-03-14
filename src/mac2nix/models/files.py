@@ -1,4 +1,4 @@
-"""Dotfile, app config, font, and library audit models."""
+"""Dotfile, app config, font, and library models."""
 
 from __future__ import annotations
 
@@ -54,10 +54,6 @@ class AppConfigEntry(BaseModel):
     content_hash: str | None = None
     scannable: bool = True  # False for databases
     modified_time: datetime | None = None
-
-
-class AppConfigResult(BaseModel):
-    entries: list[AppConfigEntry]
 
 
 class FontSource(StrEnum):
@@ -121,7 +117,8 @@ class KeyBindingEntry(BaseModel):
     action: str | dict[str, Any]
 
 
-class LibraryAuditResult(BaseModel):
+class LibraryResult(BaseModel):
+    app_configs: list[AppConfigEntry] = []
     bundles: list[BundleEntry] = []
     directories: list[LibraryDirEntry] = []
     uncovered_files: list[LibraryFileEntry] = []
