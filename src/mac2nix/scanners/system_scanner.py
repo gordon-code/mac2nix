@@ -199,9 +199,9 @@ class SystemScanner(BaseScannerPlugin):
         model = hw.get("machine_model") or hw.get("machine_name")
         chip = hw.get("chip_type") or hw.get("cpu_type")
         memory = hw.get("physical_memory")
-        serial = hw.get("serial_number")
+        # serial_number is PII with no nix-darwin migration value — do not capture
 
-        return model, chip, memory, serial
+        return model, chip, memory, None
 
     def _get_additional_hostnames(self) -> tuple[str | None, str | None]:
         """Get LocalHostName and HostName separately."""

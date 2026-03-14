@@ -90,8 +90,13 @@ async def _run_scanner_async(
         logger.exception("Scanner '%s' raised an exception", scanner_name)
         return scanner_name, None
     finally:
+        # Safe: this runs on the event loop thread (after the await), not the
+        # worker thread, so the callback sees serialised access.
         if progress_callback is not None:
-            progress_callback(scanner_name)
+            try:
+                progress_callback(scanner_name)
+            except Exception:
+                logger.debug("Progress callback failed for '%s'", scanner_name)
 
 
 async def run_scan(

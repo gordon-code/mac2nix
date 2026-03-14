@@ -7,7 +7,7 @@ import plistlib
 from pathlib import Path
 
 from mac2nix.models.preferences import PreferencesDomain, PreferencesResult, PreferenceValue
-from mac2nix.scanners._utils import convert_datetimes, read_plist_safe, run_command
+from mac2nix.scanners._utils import read_plist_safe, run_command, sanitize_plist_values
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
@@ -95,4 +95,4 @@ class PreferencesScanner(BaseScannerPlugin):
             return None
         if not isinstance(data, dict):
             return None
-        return convert_datetimes(data)
+        return sanitize_plist_values(data)
