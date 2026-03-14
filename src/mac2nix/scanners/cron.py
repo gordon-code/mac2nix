@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import Any
 
 from mac2nix.models.services import CronEntry, LaunchdScheduledJob, ScheduledTasks
 from mac2nix.scanners._utils import read_launchd_plists, run_command
@@ -13,6 +15,16 @@ logger = logging.getLogger(__name__)
 
 @register("cron")
 class CronScanner(BaseScannerPlugin):
+    def __init__(self, launchd_plists: list[tuple[Path, str, dict[str, Any]]] | None = None) -> None:
+        """Initialise the cron scanner.
+
+        Args:
+            launchd_plists: Pre-computed launchd plist tuples as returned by
+                ``read_launchd_plists()``. When provided, the scanner skips its own
+                disk read. Defaults to ``None`` (the scanner reads plists itself).
+        """
+        self._launchd_plists = launchd_plists
+
     @property
     def name(self) -> str:
         return "cron"
@@ -68,8 +80,9 @@ class CronScanner(BaseScannerPlugin):
 
     def _get_launchd_scheduled(self) -> list[LaunchdScheduledJob]:
         """Find launchd plists with scheduling keys."""
+        plists = self._launchd_plists if self._launchd_plists is not None else read_launchd_plists()
         jobs: list[LaunchdScheduledJob] = []
-        for _plist_path, _source_key, data in read_launchd_plists():
+        for _plist_path, _source_key, data in plists:
             label = data.get("Label")
             if not label:
                 continue

@@ -26,6 +26,9 @@ _LOCALTIME_PATH = Path("/etc/localtime")
 
 @register("system")
 class SystemScanner(BaseScannerPlugin):
+    def __init__(self, prefetched_data: dict[str, Any] | None = None) -> None:
+        self._prefetched_data = prefetched_data
+
     @property
     def name(self) -> str:
         return "system"
@@ -177,14 +180,16 @@ class SystemScanner(BaseScannerPlugin):
         self,
     ) -> tuple[str | None, str | None, str | None, str | None]:
         """Parse system_profiler SPHardwareDataType for hardware info."""
-        result = run_command(["system_profiler", "SPHardwareDataType", "-json"], timeout=15)
-        if result is None or result.returncode != 0:
-            return None, None, None, None
-
-        try:
-            data = json.loads(result.stdout)
-        except (json.JSONDecodeError, ValueError):
-            return None, None, None, None
+        if self._prefetched_data is not None:
+            data = self._prefetched_data
+        else:
+            result = run_command(["system_profiler", "SPHardwareDataType", "-json"], timeout=15)
+            if result is None or result.returncode != 0:
+                return None, None, None, None
+            try:
+                data = json.loads(result.stdout)
+            except (json.JSONDecodeError, ValueError):
+                return None, None, None, None
 
         hw_list = data.get("SPHardwareDataType", [])
         if not hw_list:
