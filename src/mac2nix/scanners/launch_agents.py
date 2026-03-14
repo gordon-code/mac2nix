@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -73,8 +74,8 @@ class LaunchAgentsScanner(BaseScannerPlugin):
         program_arguments = data.get("ProgramArguments", [])
         run_at_load = data.get("RunAtLoad", False)
 
-        # Shallow copy + replace env vars to avoid mutating the shared prefetch data
-        raw_plist = dict(data)
+        # Deep copy to avoid mutating the shared prefetch data
+        raw_plist = copy.deepcopy(data)
         env_raw = data.get("EnvironmentVariables")
         if isinstance(env_raw, dict):
             redacted = {

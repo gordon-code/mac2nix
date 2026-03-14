@@ -194,7 +194,7 @@ AC Power:
         assert result.hardware_model == "Mac14,2"
         assert result.hardware_chip == "Apple M2"
         assert result.hardware_memory == "16 GB"
-        assert result.hardware_serial == "XYZ123456"
+        assert result.hardware_serial is None  # serial is PII — never captured
 
     def test_hardware_info_fallback_keys(self, cmd_result) -> None:
         hw_data = {
