@@ -14,7 +14,6 @@ from mac2nix.models.application import (
 )
 from mac2nix.models.files import (
     AppConfigEntry,
-    AppConfigResult,
     BundleEntry,
     ConfigFileType,
     DotfileEntry,
@@ -25,9 +24,9 @@ from mac2nix.models.files import (
     FontSource,
     FontsResult,
     KeyBindingEntry,
-    LibraryAuditResult,
     LibraryDirEntry,
     LibraryFileEntry,
+    LibraryResult,
     WorkflowEntry,
 )
 from mac2nix.models.hardware import (
@@ -93,7 +92,6 @@ from mac2nix.models.system_state import SystemState
 
 __all__ = [
     "AppConfigEntry",
-    "AppConfigResult",
     "AppSource",
     "ApplicationsResult",
     "AudioConfig",
@@ -131,9 +129,9 @@ __all__ = [
     "LaunchAgentSource",
     "LaunchAgentsResult",
     "LaunchdScheduledJob",
-    "LibraryAuditResult",
     "LibraryDirEntry",
     "LibraryFileEntry",
+    "LibraryResult",
     "MacPortsPackage",
     "MacPortsState",
     "ManagedRuntime",

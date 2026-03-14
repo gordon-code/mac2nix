@@ -1,7 +1,6 @@
 """Scanner plugins for macOS system state discovery."""
 
 from mac2nix.scanners import (  # noqa: F401
-    app_config,
     applications,
     audio,
     containers,
@@ -11,7 +10,7 @@ from mac2nix.scanners import (  # noqa: F401
     fonts,
     homebrew,
     launch_agents,
-    library_audit,
+    library_scanner,
     network,
     nix_state,
     package_managers_scanner,
