@@ -24,7 +24,7 @@ from mac2nix.models.package_managers import (
     NixRegistryEntry,
     NixState,
 )
-from mac2nix.scanners._utils import run_command
+from mac2nix.scanners._utils import WALK_SKIP_DIRS, WALK_SKIP_SUFFIXES, parallel_walk_dirs, run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
@@ -34,26 +34,22 @@ _SENSITIVE_EXACT_KEYS = {"access-tokens", "netrc-file"}
 
 _PACKAGE_CAP = 500
 _ADJACENT_CAP = 50
-_ADJACENT_MAX_DEPTH = 2
-_PRUNE_DIRS = {
-    # VCS / build
-    ".git",
-    "node_modules",
-    ".direnv",
-    "__pycache__",
-    ".venv",
-    # macOS non-project directories (avoid wasting IO at depth 0-1)
-    "Library",
-    "Applications",
-    "Downloads",
-    "Movies",
-    "Music",
-    "Pictures",
-    "Public",
-    ".Trash",
-    ".cache",
-    ".local",
-}
+_ADJACENT_MAX_DEPTH = 5
+_NON_PROJECT_DIRS = frozenset(
+    {
+        # macOS non-project directories — checked at all walk depths.
+        # These never contain devbox.json/devenv.nix/.envrc.
+        "Library",
+        "Applications",
+        "Downloads",
+        "Movies",
+        "Music",
+        "Pictures",
+        "Public",
+        ".Trash",
+        ".local",
+    }
+)
 _SYSTEM_NIX_CONF = Path("/etc/nix/nix.conf")
 
 _VERSION_RE = re.compile(r"(\d+\.\d+[\w.]*)")
@@ -508,16 +504,44 @@ class NixStateScanner(BaseScannerPlugin):
     def _detect_nix_adjacent(
         self,
     ) -> tuple[list[DevboxProject], list[DevenvProject], list[NixDirenvConfig]]:
-        devbox_projects: list[DevboxProject] = []
-        devenv_projects: list[DevenvProject] = []
-        direnv_configs: list[NixDirenvConfig] = []
-
         home = Path.home()
-        self._walk_for_adjacent(home, 0, devbox_projects, devenv_projects, direnv_configs)
+        try:
+            children = sorted(home.iterdir())
+        except (PermissionError, OSError):
+            return [], [], []
 
-        return devbox_projects, devenv_projects, direnv_configs
+        walkable = [
+            c
+            for c in children
+            if c.is_dir()
+            and c.name not in _NON_PROJECT_DIRS
+            and c.name not in WALK_SKIP_DIRS
+            and not c.name.endswith(WALK_SKIP_SUFFIXES)
+        ]
 
-    def _walk_for_adjacent(
+        results = parallel_walk_dirs(walkable, self._walk_child_for_adjacent)
+
+        devbox: list[DevboxProject] = []
+        devenv: list[DevenvProject] = []
+        direnv: list[NixDirenvConfig] = []
+        for db, de, dc in results:
+            devbox.extend(db)
+            devenv.extend(de)
+            direnv.extend(dc)
+
+        return devbox[:_ADJACENT_CAP], devenv[:_ADJACENT_CAP], direnv[:_ADJACENT_CAP]
+
+    def _walk_child_for_adjacent(
+        self,
+        child: Path,
+    ) -> tuple[list[DevboxProject], list[DevenvProject], list[NixDirenvConfig]]:
+        devbox: list[DevboxProject] = []
+        devenv: list[DevenvProject] = []
+        direnv: list[NixDirenvConfig] = []
+        self._walk_recursive(child, 1, devbox, devenv, direnv)
+        return devbox, devenv, direnv
+
+    def _walk_recursive(
         self,
         directory: Path,
         depth: int,
@@ -534,24 +558,22 @@ class NixStateScanner(BaseScannerPlugin):
             return
 
         for entry in entries:
-            if (
-                len(devbox_projects) >= _ADJACENT_CAP
-                and len(devenv_projects) >= _ADJACENT_CAP
-                and len(direnv_configs) >= _ADJACENT_CAP
-            ):
-                break
-            if entry.is_dir():
-                if entry.name in _PRUNE_DIRS:
+            if entry.is_dir() and not entry.is_symlink():
+                if (
+                    entry.name in WALK_SKIP_DIRS
+                    or entry.name in _NON_PROJECT_DIRS
+                    or entry.name.endswith(WALK_SKIP_SUFFIXES)
+                ):
                     continue
-                self._walk_for_adjacent(entry, depth + 1, devbox_projects, devenv_projects, direnv_configs)
+                self._walk_recursive(entry, depth + 1, devbox_projects, devenv_projects, direnv_configs)
             elif entry.is_file():
-                if entry.name == "devbox.json" and len(devbox_projects) < _ADJACENT_CAP:
+                if entry.name == "devbox.json":
                     packages = self._parse_devbox_json(entry)
                     devbox_projects.append(DevboxProject(path=entry.parent, packages=packages))
-                elif entry.name == "devenv.nix" and len(devenv_projects) < _ADJACENT_CAP:
+                elif entry.name == "devenv.nix":
                     has_lock = (entry.parent / "devenv.lock").exists()
                     devenv_projects.append(DevenvProject(path=entry.parent, has_lock=has_lock))
-                elif entry.name == ".envrc" and len(direnv_configs) < _ADJACENT_CAP:
+                elif entry.name == ".envrc":
                     self._check_envrc(entry, direnv_configs)
 
     @staticmethod

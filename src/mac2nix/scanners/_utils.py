@@ -8,6 +8,8 @@ import logging
 import plistlib
 import shutil
 import subprocess
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -59,8 +61,225 @@ WALK_SKIP_DIRS = frozenset(
         # Trash
         ".Trash",
         ".Trashes",
+        # Python packaging (biggest single source: 33K+ .py files on test system)
+        "site-packages",
+        ".venv",
+        "venv",
+        ".eggs",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        ".pytype",
+        ".direnv",
+        # Electron/Chromium (every Electron app generates these)
+        "Crashpad",
+        "Session Storage",
+        "WebStorage",
+        "Local Storage",
+        "_locales",
+        # macOS internal metadata
+        ".Spotlight-V100",
+        ".fseventsd",
+        ".DocumentRevisions-V100",
+        ".TemporaryItems",
+        # Developer tools & large data stores
+        "CoreSimulator",
+        "DeviceSupport",
+        "steamapps",
+        "drive_c",
     }
 )
+
+NON_CONFIG_EXTENSIONS = frozenset(
+    {
+        # Source code (not user config — package/library files)
+        ".py",
+        ".pyi",
+        ".pyc",
+        ".pyo",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".mjs",
+        ".cjs",
+        ".c",
+        ".cpp",
+        ".cc",
+        ".h",
+        ".hpp",
+        ".m",
+        ".mm",
+        ".swift",
+        ".go",
+        ".rs",
+        ".java",
+        ".class",
+        ".jar",
+        ".rb",
+        ".pl",
+        ".pm",
+        ".lua",
+        ".r",
+        # Compiled/binary artifacts
+        ".so",
+        ".dylib",
+        ".dll",
+        ".o",
+        ".a",
+        ".lib",
+        ".wasm",
+        ".node",
+        ".framework",
+        ".exe",
+        ".msi",
+        # Media & images
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".ico",
+        ".icns",
+        ".svg",
+        ".webp",
+        ".tiff",
+        ".tif",
+        ".heic",
+        ".heif",
+        ".mp3",
+        ".mp4",
+        ".m4a",
+        ".m4v",
+        ".wav",
+        ".aac",
+        ".flac",
+        ".ogg",
+        ".avi",
+        ".mov",
+        ".mkv",
+        ".webm",
+        ".ttf",
+        ".otf",
+        ".woff",
+        ".woff2",
+        ".eot",
+        # Archives & compressed
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".xz",
+        ".7z",
+        ".rar",
+        ".dmg",
+        ".iso",
+        ".pkg",
+        # Data files (not human-readable config)
+        ".lance",
+        ".parquet",
+        ".arrow",
+        ".feather",
+        ".npy",
+        ".npz",
+        ".pickle",
+        ".pkl",
+        ".ldb",
+        ".sst",
+        # Web assets (Electron app bundles)
+        ".css",
+        ".scss",
+        ".less",
+        ".html",
+        ".htm",
+        # GPU shaders
+        ".amd",
+        ".glsl",
+        ".hlsl",
+        ".metal",
+        # Debug & build
+        ".map",
+        ".d",
+        ".dep",
+        ".log",
+        # Documents (not config)
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".ppt",
+        ".pptx",
+        # Email messages (~/Library/Mail can have 500K+ .emlx files)
+        ".emlx",
+        ".eml",
+        ".mbox",
+        # Misc non-config
+        ".strings",
+        ".nib",
+        ".storyboard",
+        ".typed",
+        ".manifest",
+    }
+)
+
+WALK_SKIP_SUFFIXES = (".noindex", ".lproj")
+
+
+def parallel_walk_dirs[T](
+    dirs: list[Path],
+    process_fn: Callable[[Path], T],
+    *,
+    max_workers: int = 8,
+) -> list[T]:
+    """Walk multiple independent directory trees in parallel.
+
+    Each directory in *dirs* is submitted as an independent work unit to a
+    ThreadPoolExecutor. The *process_fn* receives a single directory Path and
+    should return a result of type T. Exceptions in individual workers are
+    logged and skipped.
+
+    The function is designed to be called from a scanner's ``scan()`` method,
+    which already runs inside ``asyncio.to_thread()`` via the orchestrator.
+    The ThreadPoolExecutor provides a second level of parallelism within
+    the scanner's thread.
+
+    Note: callers run inside asyncio.to_thread() via the orchestrator, creating
+    nested thread pools. Peak thread count is bounded (~8 per scanner x
+    concurrent scanners) and well within OS limits.
+
+    Args:
+        dirs: Independent directory roots to process in parallel.
+        process_fn: Function that processes one directory and returns a result.
+        max_workers: Maximum concurrent workers (default 8, suitable for NVMe SSD).
+
+    Returns:
+        List of results from successful process_fn calls (order not guaranteed).
+    """
+    if not dirs:
+        return []
+
+    # For very small dir lists, skip the pool overhead
+    if len(dirs) <= 2:
+        results: list[T] = []
+        for d in dirs:
+            try:
+                results.append(process_fn(d))
+            except Exception:
+                logger.exception("Failed to process directory: %s", d)
+        return results
+
+    results: list[T] = []
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(dirs))) as pool:
+        futures = {pool.submit(process_fn, d): d for d in dirs}
+        for future in as_completed(futures):
+            directory = futures[future]
+            try:
+                results.append(future.result())
+            except Exception:
+                logger.exception("Failed to process directory: %s", directory)
+    return results
+
 
 LAUNCHD_DIRS: list[tuple[Path, str]] = [
     (Path.home() / "Library" / "LaunchAgents", "user"),
