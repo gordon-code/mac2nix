@@ -801,6 +801,12 @@ class TestNixAdjacent:
         node_modules.mkdir()
         (node_modules / "devbox.json").write_text(json.dumps({"packages": ["bar"]}))
 
+        # NEW: WALK_SKIP_DIRS entries (extended set replacing old _PRUNE_DIRS)
+        for skip_dir in ["DerivedData", "Caches", "site-packages"]:
+            d = tmp_path / "project" / skip_dir
+            d.mkdir(parents=True)
+            (d / "devbox.json").write_text(json.dumps({"packages": ["skip"]}))
+
         scanner = NixStateScanner()
         with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
             devbox_projects, _, _ = scanner._detect_nix_adjacent()
@@ -808,20 +814,22 @@ class TestNixAdjacent:
         assert len(devbox_projects) == 0
 
     def test_depth_limit(self, tmp_path: Path) -> None:
-        # depth 3 (home -> a -> b -> c) -- should not be found
-        deep = tmp_path / "a" / "b" / "c"
+        # depth 6 (home -> a -> b -> c -> d -> e -> f) -- should not be found
+        deep = tmp_path / "a" / "b" / "c" / "d" / "e" / "f"
         deep.mkdir(parents=True)
         (deep / "devbox.json").write_text(json.dumps({"packages": ["deep"]}))
 
-        # depth 2 (home -> a -> b) -- should be found
-        (tmp_path / "a" / "b" / "devbox.json").write_text(json.dumps({"packages": ["ok"]}))
+        # depth 5 (home -> a -> b -> c -> d -> e) -- should be found
+        (tmp_path / "a" / "b" / "c" / "d" / "e" / "devbox.json").write_text(
+            json.dumps({"packages": ["ok"]}),
+        )
 
         scanner = NixStateScanner()
         with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
             devbox_projects, _, _ = scanner._detect_nix_adjacent()
 
         paths = [str(p.path) for p in devbox_projects]
-        assert str(tmp_path / "a" / "b") in paths
+        assert str(tmp_path / "a" / "b" / "c" / "d" / "e") in paths
         assert str(deep) not in paths
 
     def test_devbox_json_malformed(self, tmp_path: Path) -> None:
@@ -847,6 +855,39 @@ class TestNixAdjacent:
             devbox_projects, _, _ = scanner._detect_nix_adjacent()
 
         assert len(devbox_projects) == 50
+
+    def test_non_project_dirs_skipped(self, tmp_path: Path) -> None:
+        for non_proj in ["Library", "Music", "Pictures", "Downloads"]:
+            d = tmp_path / non_proj
+            d.mkdir()
+            (d / "devbox.json").write_text(json.dumps({"packages": ["skip"]}))
+
+        # Control: a normal project dir SHOULD be found
+        proj = tmp_path / "myproject"
+        proj.mkdir()
+        (proj / "devbox.json").write_text(json.dumps({"packages": ["found"]}))
+
+        scanner = NixStateScanner()
+        with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
+            devbox_projects, _, _ = scanner._detect_nix_adjacent()
+
+        assert len(devbox_projects) == 1
+        assert devbox_projects[0].path == proj
+
+    def test_walk_skip_suffixes_applied(self, tmp_path: Path) -> None:
+        noindex = tmp_path / "attachments.noindex"
+        noindex.mkdir()
+        (noindex / "devbox.json").write_text(json.dumps({"packages": ["skip"]}))
+
+        lproj = tmp_path / "en.lproj"
+        lproj.mkdir()
+        (lproj / "devbox.json").write_text(json.dumps({"packages": ["skip"]}))
+
+        scanner = NixStateScanner()
+        with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
+            devbox_projects, _, _ = scanner._detect_nix_adjacent()
+
+        assert len(devbox_projects) == 0
 
 
 # ---------------------------------------------------------------------------

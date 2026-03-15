@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +21,15 @@ from mac2nix.models.files import (
     LibraryResult,
     WorkflowEntry,
 )
-from mac2nix.scanners._utils import WALK_SKIP_DIRS, hash_file, read_plist_safe, run_command
+from mac2nix.scanners._utils import (
+    NON_CONFIG_EXTENSIONS,
+    WALK_SKIP_DIRS,
+    WALK_SKIP_SUFFIXES,
+    hash_file,
+    parallel_walk_dirs,
+    read_plist_safe,
+    run_command,
+)
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
@@ -43,7 +52,6 @@ _EXTENSION_MAP: dict[str, ConfigFileType] = {
 }
 
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-_MAX_FILES_PER_APP = 500
 
 # --- Library audit constants ---
 
@@ -77,7 +85,16 @@ _TRANSIENT_DIRS = frozenset(
 
 _SENSITIVE_KEY_PATTERNS = {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"}
 
-_MAX_FILES_PER_DIR = 1000
+# Redacts values in key=value / key: value lines where the key contains a sensitive word.
+# Uses separator-prefixed compound patterns ([_.-]key, [_.-]token, etc.) to avoid false
+# positives on words like "monkey", "turkey", "keyboard". Standalone patterns (password,
+# secret, token) are anchored to the start of the key. Handles JSON quoted keys.
+_SENSITIVE_VALUE_RE = re.compile(
+    r'^(\s*"?(?:\S*[_.\-](?:key|token|secret|password|credential|auth)'
+    r'|password|passwd|secret|token)"?\s*[:=]\s*).+',
+    re.IGNORECASE | re.MULTILINE,
+)
+
 _MAX_SCRIPTS = 50
 
 _SYSTEM_SCAN_PATTERNS: dict[str, str] = {
@@ -138,12 +155,12 @@ class LibraryScanner(BaseScannerPlugin):
         scripts = self._scan_scripts(home_lib)
 
         # Capture uncovered files, workflows, and bundles from uncovered directories
-        for d in directories:
-            if d.covered_by_scanner is None and d.name not in _TRANSIENT_DIRS:
-                files, wf, bdl = self._capture_uncovered_dir(d.path)
-                uncovered_files.extend(files)
-                workflows.extend(wf)
-                bundles.extend(bdl)
+        uncovered_dirs = [d.path for d in directories if d.covered_by_scanner is None and d.name not in _TRANSIENT_DIRS]
+        captured = parallel_walk_dirs(uncovered_dirs, self._capture_uncovered_dir)
+        for files, wf, bdl in captured:
+            uncovered_files.extend(files)
+            workflows.extend(wf)
+            bundles.extend(bdl)
 
         # Scan workflows from known Workflows/Services dirs
         for wf_dir_name in ["Workflows", "Services"]:
@@ -179,8 +196,6 @@ class LibraryScanner(BaseScannerPlugin):
 
     def _scan_app_configs(self, home_lib: Path) -> list[AppConfigEntry]:
         """Walk Application Support, Group Containers, and Containers for app configs."""
-        entries: list[AppConfigEntry] = []
-
         scan_dirs = [
             home_lib / "Application Support",
             home_lib / "Group Containers",
@@ -197,6 +212,7 @@ class LibraryScanner(BaseScannerPlugin):
             except PermissionError:
                 logger.warning("Permission denied reading: %s", containers_dir)
 
+        all_app_dirs: list[Path] = []
         for base_dir in scan_dirs:
             if not base_dir.is_dir():
                 continue
@@ -211,25 +227,28 @@ class LibraryScanner(BaseScannerPlugin):
                 if not os.access(app_dir, os.R_OK):
                     logger.debug("Skipping TCC-protected directory: %s", app_dir)
                     continue
-                self._scan_app_dir(app_dir, entries)
+                all_app_dirs.append(app_dir)
 
-        return entries
+        batched = parallel_walk_dirs(all_app_dirs, self._scan_app_dir)
+        return [e for batch in batched for e in batch]
 
-    def _scan_app_dir(self, app_dir: Path, entries: list[AppConfigEntry]) -> None:
+    def _scan_app_dir(self, app_dir: Path) -> list[AppConfigEntry]:
         app_name = app_dir.name
-        file_count = 0
+        entries: list[AppConfigEntry] = []
 
         try:
             for dirpath, dirnames, filenames in os.walk(app_dir, followlinks=False):
                 # Prune skipped directories in-place
-                dirnames[:] = [d for d in dirnames if d not in WALK_SKIP_DIRS]
+                dirnames[:] = [d for d in dirnames if d not in WALK_SKIP_DIRS and not d.endswith(WALK_SKIP_SUFFIXES)]
 
                 for filename in filenames:
-                    if file_count >= _MAX_FILES_PER_APP:
-                        logger.info("Reached %d file cap for app: %s", _MAX_FILES_PER_APP, app_name)
-                        return
-
                     filepath = Path(dirpath) / filename
+                    ext = filepath.suffix.lower()
+
+                    # Skip non-config files before any syscall
+                    if ext in NON_CONFIG_EXTENSIONS:
+                        continue
+
                     try:
                         stat = filepath.stat()
                     except OSError:
@@ -239,7 +258,6 @@ class LibraryScanner(BaseScannerPlugin):
                     if stat.st_size > _MAX_FILE_SIZE:
                         continue
 
-                    ext = filepath.suffix.lower()
                     file_type = _EXTENSION_MAP.get(ext, ConfigFileType.UNKNOWN)
                     scannable = file_type != ConfigFileType.DATABASE
 
@@ -256,9 +274,10 @@ class LibraryScanner(BaseScannerPlugin):
                             modified_time=modified_time,
                         )
                     )
-                    file_count += 1
         except PermissionError:
             logger.warning("Permission denied reading app config dir: %s", app_dir)
+
+        return entries
 
     # --- Library audit scanning ---
 
@@ -267,27 +286,27 @@ class LibraryScanner(BaseScannerPlugin):
         if not lib_path.is_dir():
             return []
 
-        entries: list[LibraryDirEntry] = []
         try:
-            for child in sorted(lib_path.iterdir()):
-                if not child.is_dir():
-                    continue
-                covered = _COVERED_DIRS.get(child.name)
-                file_count, total_size, newest_mod = self._dir_stats(child)
-                entries.append(
-                    LibraryDirEntry(
-                        name=child.name,
-                        path=child,
-                        file_count=file_count,
-                        total_size_bytes=total_size,
-                        covered_by_scanner=covered,
-                        has_user_content=covered is None and child.name not in _TRANSIENT_DIRS,
-                        newest_modification=newest_mod,
-                    )
-                )
+            children = [c for c in sorted(lib_path.iterdir()) if c.is_dir()]
         except PermissionError:
             logger.warning("Permission denied reading: %s", lib_path)
+            return []
 
+        def _compute_entry(child: Path) -> LibraryDirEntry:
+            covered = _COVERED_DIRS.get(child.name)
+            file_count, total_size, newest_mod = self._dir_stats(child)
+            return LibraryDirEntry(
+                name=child.name,
+                path=child,
+                file_count=file_count,
+                total_size_bytes=total_size,
+                covered_by_scanner=covered,
+                has_user_content=covered is None and child.name not in _TRANSIENT_DIRS,
+                newest_modification=newest_mod,
+            )
+
+        entries = parallel_walk_dirs(children, _compute_entry)
+        entries.sort(key=lambda e: e.name)
         return entries
 
     @staticmethod
@@ -319,16 +338,11 @@ class LibraryScanner(BaseScannerPlugin):
         files: list[LibraryFileEntry] = []
         workflows: list[WorkflowEntry] = []
         bundles: list[BundleEntry] = []
-        count = 0
 
         try:
             for dirpath, dirnames, filenames in os.walk(dir_path, followlinks=False):
                 for filename in filenames:
-                    if count >= _MAX_FILES_PER_DIR:
-                        logger.info("Reached %d file cap for directory: %s", _MAX_FILES_PER_DIR, dir_path)
-                        return files, workflows, bundles
                     filepath = Path(dirpath) / filename
-                    count += 1
                     entry = self._classify_file(filepath)
                     if entry is not None:
                         files.append(entry)
@@ -343,7 +357,7 @@ class LibraryScanner(BaseScannerPlugin):
                             workflows.append(wf)
                     elif any(dirname.endswith(ext) for ext in _BUNDLE_EXTENSIONS):
                         bundles.append(self._parse_bundle(sub_path))
-                    elif dirname not in WALK_SKIP_DIRS:
+                    elif dirname not in WALK_SKIP_DIRS and not dirname.endswith(WALK_SKIP_SUFFIXES):
                         kept.append(dirname)
                 dirnames[:] = kept
         except PermissionError:
@@ -353,13 +367,26 @@ class LibraryScanner(BaseScannerPlugin):
 
     def _classify_file(self, filepath: Path) -> LibraryFileEntry | None:
         """Classify and capture a file from an uncovered directory."""
+        suffix = filepath.suffix.lower()
+
+        if suffix in NON_CONFIG_EXTENSIONS:
+            # Non-config: skip all I/O, record path only
+            return LibraryFileEntry(
+                path=filepath,
+                file_type=suffix.lstrip(".") if suffix else "unknown",
+                content_hash=None,
+                plist_content=None,
+                text_content=None,
+                migration_strategy="metadata_only",
+                size_bytes=None,
+            )
+
         try:
             stat = filepath.stat()
         except OSError:
             return None
 
         size = stat.st_size
-        suffix = filepath.suffix.lower()
         file_type = suffix.lstrip(".") if suffix else "unknown"
         plist_content: dict[str, Any] | None = None
         text_content: str | None = None
@@ -377,7 +404,8 @@ class LibraryScanner(BaseScannerPlugin):
             content_hash = hash_file(filepath)
             if size < 65536:
                 with contextlib.suppress(OSError):
-                    text_content = filepath.read_text(errors="replace")
+                    raw_text = filepath.read_text(errors="replace")
+                    text_content = _SENSITIVE_VALUE_RE.sub(r"\1***REDACTED***", raw_text)
             strategy = "text_capture" if text_content else "hash_only"
         elif suffix in _BUNDLE_EXTENSIONS:
             strategy = "bundle"

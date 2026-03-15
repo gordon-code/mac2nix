@@ -4,9 +4,12 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from mac2nix.models.files import ConfigFileType, LibraryResult
 from mac2nix.scanners.library_scanner import (
     _COVERED_DIRS,
+    _SENSITIVE_VALUE_RE,
     _TRANSIENT_DIRS,
     LibraryScanner,
     _redact_sensitive_keys,
@@ -272,7 +275,7 @@ class TestLibraryScanner:
         assert len(result.app_configs) == 1
         assert result.app_configs[0].path.name == "small.json"
 
-    def test_max_files_per_app_cap(self, tmp_path: Path) -> None:
+    def test_processes_all_files_no_cap(self, tmp_path: Path) -> None:
         app_support = _setup_app_support(tmp_path)
         app_dir = app_support / "ManyFilesApp"
         app_dir.mkdir()
@@ -287,7 +290,7 @@ class TestLibraryScanner:
 
         assert isinstance(result, LibraryResult)
         app_entries = [e for e in result.app_configs if e.app_name == "ManyFilesApp"]
-        assert len(app_entries) == 500
+        assert len(app_entries) == 501
 
     def test_skips_non_config_dirs(self, tmp_path: Path) -> None:
         app_support = _setup_app_support(tmp_path)
@@ -724,7 +727,7 @@ class TestLibraryScanner:
         result = LibraryScanner()._scan_text_replacements(lib)
         assert result == []
 
-    def test_capture_uncovered_dir_walks_below_cap(self, tmp_path: Path) -> None:
+    def test_capture_uncovered_dir_walks_all_files(self, tmp_path: Path) -> None:
         for i in range(210):
             (tmp_path / f"file{i:03d}.txt").write_text(f"content {i}")
 
@@ -734,7 +737,7 @@ class TestLibraryScanner:
         ):
             files, _workflows, _bundles = LibraryScanner()._capture_uncovered_dir(tmp_path)
 
-        assert len(files) == 210  # all files captured (below 1000 cap)
+        assert len(files) == 210
 
     def test_capture_uncovered_dir_skips_non_config_dirs(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "real_config"
@@ -948,7 +951,7 @@ class TestTextReplacementsCorrupted:
 
 
 class TestCaptureUncoveredDirEdgeCases:
-    def test_file_cap_enforced(self, tmp_path: Path) -> None:
+    def test_processes_all_files_no_dir_cap(self, tmp_path: Path) -> None:
         for i in range(1050):
             (tmp_path / f"file{i:04d}.txt").write_text(f"content {i}")
 
@@ -958,8 +961,7 @@ class TestCaptureUncoveredDirEdgeCases:
         ):
             files, _workflows, _bundles = LibraryScanner()._capture_uncovered_dir(tmp_path)
 
-        # Count includes all files encountered, but total should be capped
-        assert len(files) <= 1000
+        assert len(files) == 1050
 
     def test_workflow_bundles_discovered(self, tmp_path: Path) -> None:
         wf = tmp_path / "MyAction.workflow"
@@ -1010,6 +1012,89 @@ class TestClassifyFileEdgeCases:
         assert entry.migration_strategy == "hash_only"
         assert entry.plist_content is None
         assert entry.content_hash == "abc123"
+
+    def test_classify_file_non_config_extension(self, tmp_path: Path) -> None:
+        py_file = tmp_path / "script.py"
+        py_file.write_text("print('hello')")
+
+        entry = LibraryScanner()._classify_file(py_file)
+
+        assert entry is not None
+        assert entry.size_bytes is None
+        assert entry.migration_strategy == "metadata_only"
+        assert entry.content_hash is None
+        assert entry.file_type == "py"
+
+    def test_classify_file_redacts_sensitive_text(self, tmp_path: Path) -> None:
+        conf_file = tmp_path / "app.conf"
+        conf_file.write_text("host = localhost\npassword = secret123\nport = 8080\n")
+
+        with patch("mac2nix.scanners.library_scanner.hash_file", return_value="hash"):
+            entry = LibraryScanner()._classify_file(conf_file)
+
+        assert entry is not None
+        assert entry.text_content is not None
+        assert "secret123" not in entry.text_content
+        assert "***REDACTED***" in entry.text_content
+        assert "localhost" in entry.text_content
+        assert "8080" in entry.text_content
+
+
+class TestSensitiveValueRedaction:
+    """Test _SENSITIVE_VALUE_RE directly — no file I/O."""
+
+    @pytest.mark.parametrize(
+        ("line", "secret"),
+        [
+            # Bare standalone keys
+            ("password = secret123", "secret123"),
+            ("secret = mysecret", "mysecret"),
+            ("token = ghp_abc", "ghp_abc"),
+            ("passwd = hunter2", "hunter2"),
+            # Compound keys with underscore
+            ("db_password = xxx", "xxx"),
+            ("api_key: sk-abc", "sk-abc"),
+            ("SECRET_KEY = xxx", "xxx"),
+            ("AUTH_TOKEN: ghp_xxx", "ghp_xxx"),
+            # Compound keys with hyphen/dot
+            ("access-token = xxx", "xxx"),
+            ("auth.token: xxx", "xxx"),
+            ("private-key = xxx", "xxx"),
+            # No-space separators
+            ("TOKEN=ghp_realtoken", "ghp_realtoken"),
+            # JSON quoted keys
+            ('"password": "secret123"', '"secret123"'),
+            ('"api_key": "sk-abc"', '"sk-abc"'),
+            # Indented (YAML)
+            ("  password: secret123", "secret123"),
+            ("  db_password: xxx", "xxx"),
+        ],
+        ids=lambda v: v[:25] if isinstance(v, str) else v,
+    )
+    def test_redacts_sensitive_values(self, line: str, secret: str) -> None:
+        result = _SENSITIVE_VALUE_RE.sub(r"\1***REDACTED***", line)
+        assert secret not in result
+        assert "***REDACTED***" in result
+
+    @pytest.mark.parametrize(
+        ("line", "preserved_value"),
+        [
+            ("monkey = banana", "banana"),
+            ("turkey = bird", "bird"),
+            ("keyboard = us", "us"),
+            ("author = John", "John"),
+            ("hockey_score = 3", "3"),
+            ("donkey_kong = mario", "mario"),
+            ("host = localhost", "localhost"),
+            ("port = 8080", "8080"),
+            ("name = Alice", "Alice"),
+        ],
+        ids=lambda v: v[:25] if isinstance(v, str) else v,
+    )
+    def test_preserves_non_sensitive_values(self, line: str, preserved_value: str) -> None:
+        result = _SENSITIVE_VALUE_RE.sub(r"\1***REDACTED***", line)
+        assert result == line
+        assert preserved_value in result
 
 
 class TestKeyBindingsEdgeCases:
@@ -1136,3 +1221,29 @@ class TestSymlinkSafety:
         names = [b.name for b in result]
         assert "Real.app" in names
         assert "Linked.app" not in names
+
+
+class TestScanAppDirEdgeCases:
+    def test_scan_app_dir_skips_non_config_extensions(self, tmp_path: Path) -> None:
+        app_dir = tmp_path / "MyApp"
+        app_dir.mkdir()
+        (app_dir / "config.json").write_text('{"key": "value"}')
+        (app_dir / "module.py").write_text("print('hello')")
+
+        entries = LibraryScanner()._scan_app_dir(app_dir)
+
+        paths = [e.path.name for e in entries]
+        assert "config.json" in paths
+        assert "module.py" not in paths
+
+    def test_scan_app_dir_skips_noindex_dirs(self, tmp_path: Path) -> None:
+        app_dir = tmp_path / "MyApp"
+        app_dir.mkdir()
+        noindex_dir = app_dir / "foo.noindex"
+        noindex_dir.mkdir()
+        (noindex_dir / "settings.json").write_text('{"hidden": true}')
+
+        entries = LibraryScanner()._scan_app_dir(app_dir)
+
+        paths = [str(e.path) for e in entries]
+        assert not any("foo.noindex" in p for p in paths)
