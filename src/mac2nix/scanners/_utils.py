@@ -259,25 +259,25 @@ def parallel_walk_dirs[T](
     if not dirs:
         return []
 
+    results: list[T] = []
+
     # For very small dir lists, skip the pool overhead
     if len(dirs) <= 2:
-        results: list[T] = []
         for d in dirs:
             try:
                 results.append(process_fn(d))
             except Exception:
                 logger.exception("Failed to process directory: %s", d)
-        return results
+    else:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(dirs))) as pool:
+            futures = {pool.submit(process_fn, d): d for d in dirs}
+            for future in as_completed(futures):
+                directory = futures[future]
+                try:
+                    results.append(future.result())
+                except Exception:
+                    logger.exception("Failed to process directory: %s", directory)
 
-    results: list[T] = []
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(dirs))) as pool:
-        futures = {pool.submit(process_fn, d): d for d in dirs}
-        for future in as_completed(futures):
-            directory = futures[future]
-            try:
-                results.append(future.result())
-            except Exception:
-                logger.exception("Failed to process directory: %s", directory)
     return results
 
 

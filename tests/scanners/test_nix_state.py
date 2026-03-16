@@ -318,7 +318,7 @@ class TestProfileDetection:
         assert len(result) == 1
         assert result[0].packages[0].name == "curl-8.0"
 
-    def test_package_cap(self, cmd_result, tmp_path: Path) -> None:
+    def test_no_package_cap(self, cmd_result, tmp_path: Path) -> None:
         elements = [{"storePaths": [f"/nix/store/hash-pkg{i}-1.0"], "attrPath": f"pkg{i}"} for i in range(600)]
         profile_json = json.dumps({"elements": elements})
 
@@ -332,7 +332,7 @@ class TestProfileDetection:
         ):
             result = scanner._detect_profiles()
 
-        assert len(result[0].packages) == 500
+        assert len(result[0].packages) == 600
 
 
 # ---------------------------------------------------------------------------
@@ -844,7 +844,7 @@ class TestNixAdjacent:
         assert len(devbox_projects) == 1
         assert devbox_projects[0].packages == []
 
-    def test_cap_limit(self, tmp_path: Path) -> None:
+    def test_no_cap_all_projects_returned(self, tmp_path: Path) -> None:
         for i in range(55):
             d = tmp_path / f"proj{i}"
             d.mkdir()
@@ -854,7 +854,7 @@ class TestNixAdjacent:
         with patch("mac2nix.scanners.nix_state.Path.home", return_value=tmp_path):
             devbox_projects, _, _ = scanner._detect_nix_adjacent()
 
-        assert len(devbox_projects) == 50
+        assert len(devbox_projects) == 55
 
     def test_non_project_dirs_skipped(self, tmp_path: Path) -> None:
         for non_proj in ["Library", "Music", "Pictures", "Downloads"]:

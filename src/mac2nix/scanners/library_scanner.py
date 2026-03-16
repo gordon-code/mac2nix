@@ -95,7 +95,6 @@ _SENSITIVE_VALUE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-_MAX_SCRIPTS = 50
 
 _SYSTEM_SCAN_PATTERNS: dict[str, str] = {
     "Extensions": "*.kext",
@@ -161,12 +160,16 @@ class LibraryScanner(BaseScannerPlugin):
             uncovered_files.extend(files)
             workflows.extend(wf)
             bundles.extend(bdl)
-
         # Scan workflows from known Workflows/Services dirs
         for wf_dir_name in ["Workflows", "Services"]:
             wf_dir = home_lib / wf_dir_name
             if wf_dir.is_dir():
                 workflows.extend(self._scan_workflows(wf_dir))
+
+        # Sort parallel-aggregated lists for deterministic output
+        uncovered_files.sort(key=lambda e: str(e.path))
+        workflows.sort(key=lambda e: str(e.path))
+        bundles.sort(key=lambda e: str(e.path))
 
         # --- App config scanning ---
         entries = self._scan_app_configs(home_lib)
@@ -230,7 +233,9 @@ class LibraryScanner(BaseScannerPlugin):
                 all_app_dirs.append(app_dir)
 
         batched = parallel_walk_dirs(all_app_dirs, self._scan_app_dir)
-        return [e for batch in batched for e in batch]
+        entries = [e for batch in batched for e in batch]
+        entries.sort(key=lambda e: (e.app_name, str(e.path)))
+        return entries
 
     def _scan_app_dir(self, app_dir: Path) -> list[AppConfigEntry]:
         app_name = app_dir.name
@@ -370,16 +375,7 @@ class LibraryScanner(BaseScannerPlugin):
         suffix = filepath.suffix.lower()
 
         if suffix in NON_CONFIG_EXTENSIONS:
-            # Non-config: skip all I/O, record path only
-            return LibraryFileEntry(
-                path=filepath,
-                file_type=suffix.lstrip(".") if suffix else "unknown",
-                content_hash=None,
-                plist_content=None,
-                text_content=None,
-                migration_strategy="metadata_only",
-                size_bytes=None,
-            )
+            return None
 
         try:
             stat = filepath.stat()
@@ -559,9 +555,6 @@ class LibraryScanner(BaseScannerPlugin):
         scripts: list[str] = []
         try:
             for f in sorted(scripts_dir.iterdir()):
-                if len(scripts) >= _MAX_SCRIPTS:
-                    logger.info("Reached %d script cap for: %s", _MAX_SCRIPTS, scripts_dir)
-                    break
                 if f.is_file():
                     if f.suffix == ".scpt":
                         # Try to decompile AppleScript
