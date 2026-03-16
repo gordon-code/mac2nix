@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 _SENSITIVE_PATTERNS = {"ACCESS_TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "NETRC"}
 _SENSITIVE_EXACT_KEYS = {"access-tokens", "netrc-file"}
 
-_PACKAGE_CAP = 500
-_ADJACENT_CAP = 50
 _ADJACENT_MAX_DEPTH = 5
 _NON_PROJECT_DIRS = frozenset(
     {
@@ -171,7 +169,7 @@ class NixStateScanner(BaseScannerPlugin):
                         NixProfile(
                             name="default",
                             path=nix_profile_path,
-                            packages=packages[:_PACKAGE_CAP],
+                            packages=packages,
                         )
                     )
                     return profiles
@@ -189,7 +187,7 @@ class NixStateScanner(BaseScannerPlugin):
                         NixProfile(
                             name="default",
                             path=Path.home() / ".nix-profile",
-                            packages=packages[:_PACKAGE_CAP],
+                            packages=packages,
                         )
                     )
                     return profiles
@@ -209,7 +207,7 @@ class NixStateScanner(BaseScannerPlugin):
                     NixProfile(
                         name="default",
                         path=Path.home() / ".nix-profile",
-                        packages=packages[:_PACKAGE_CAP],
+                        packages=packages,
                     )
                 )
 
@@ -351,8 +349,7 @@ class NixStateScanner(BaseScannerPlugin):
         result = run_command(["home-manager", "packages"])
         if result is None or result.returncode != 0:
             return []
-        packages = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
-        return packages[:_PACKAGE_CAP]
+        return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
 
     def _detect_channels_and_flakes(
         self,
@@ -529,7 +526,11 @@ class NixStateScanner(BaseScannerPlugin):
             devenv.extend(de)
             direnv.extend(dc)
 
-        return devbox[:_ADJACENT_CAP], devenv[:_ADJACENT_CAP], direnv[:_ADJACENT_CAP]
+        devbox.sort(key=lambda e: str(e.path))
+        devenv.sort(key=lambda e: str(e.path))
+        direnv.sort(key=lambda e: str(e.path))
+
+        return devbox, devenv, direnv
 
     def _walk_child_for_adjacent(
         self,

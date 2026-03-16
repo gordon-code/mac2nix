@@ -1013,17 +1013,11 @@ class TestClassifyFileEdgeCases:
         assert entry.plist_content is None
         assert entry.content_hash == "abc123"
 
-    def test_classify_file_non_config_extension(self, tmp_path: Path) -> None:
+    def test_classify_file_non_config_extension_returns_none(self, tmp_path: Path) -> None:
         py_file = tmp_path / "script.py"
         py_file.write_text("print('hello')")
 
-        entry = LibraryScanner()._classify_file(py_file)
-
-        assert entry is not None
-        assert entry.size_bytes is None
-        assert entry.migration_strategy == "metadata_only"
-        assert entry.content_hash is None
-        assert entry.file_type == "py"
+        assert LibraryScanner()._classify_file(py_file) is None
 
     def test_classify_file_redacts_sensitive_text(self, tmp_path: Path) -> None:
         conf_file = tmp_path / "app.conf"
