@@ -10,8 +10,12 @@ import click
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
+from mac2nix.models.system_state import SystemState
 from mac2nix.orchestrator import run_scan
 from mac2nix.scanners import get_all_scanners
+from mac2nix.vm.discovery import DiscoveryRunner
+from mac2nix.vm.manager import TartVMManager
+from mac2nix.vm.validator import Validator
 
 
 @click.group()
@@ -105,9 +109,60 @@ def generate() -> None:
 
 
 @main.command()
-def validate() -> None:
+@click.option(
+    "--flake-path",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Path to the nix-darwin flake directory.",
+)
+@click.option(
+    "--scan-file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Source SystemState JSON produced by 'mac2nix scan'.",
+)
+@click.option("--base-vm", default="base-macos", show_default=True, help="Base Tart VM name.")
+@click.option("--vm-user", default="admin", show_default=True, help="SSH username inside the VM.")
+@click.option("--vm-password", default="admin", show_default=True, help="SSH password inside the VM.")
+def validate(
+    flake_path: Path,
+    scan_file: Path,
+    base_vm: str,
+    vm_user: str,
+    vm_password: str,
+) -> None:
     """Validate generated configuration in a Tart VM."""
-    click.echo("validate: not yet implemented")
+    if not TartVMManager.is_available():
+        raise click.ClickException("tart CLI not found — install tart to use 'validate'.")
+
+    try:
+        source_state = SystemState.from_json(scan_file)
+    except Exception as exc:
+        raise click.ClickException(f"Failed to load scan file: {exc}") from exc
+
+    async def _run() -> None:
+        async with TartVMManager(base_vm, vm_user, vm_password) as vm:
+            result = await Validator(vm).validate(flake_path, source_state)
+
+        if result.errors:
+            click.echo("Validation errors:", err=True)
+            for error in result.errors:
+                click.echo(f"  {error}", err=True)
+
+        if result.fidelity:
+            click.echo(f"Overall fidelity: {result.fidelity.overall_score:.1%}")
+            for domain, ds in sorted(result.fidelity.domain_scores.items()):
+                click.echo(f"  {domain}: {ds.score:.1%} ({ds.matching_fields}/{ds.total_fields})")
+
+        if not result.success:
+            raise click.ClickException("Validation failed.")
+
+    try:
+        asyncio.run(_run())
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @main.command()
@@ -117,6 +172,51 @@ def diff() -> None:
 
 
 @main.command()
-def discover() -> None:
+@click.option("--package", required=True, help="Package name to install and discover.")
+@click.option(
+    "--type",
+    "package_type",
+    default="brew",
+    show_default=True,
+    type=click.Choice(["brew", "cask"]),
+    help="Package manager type.",
+)
+@click.option("--base-vm", default="base-macos", show_default=True, help="Base Tart VM name.")
+@click.option("--vm-user", default="admin", show_default=True, help="SSH username inside the VM.")
+@click.option("--vm-password", default="admin", show_default=True, help="SSH password inside the VM.")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    default=None,
+    metavar="FILE",
+    help="Write JSON result to FILE instead of stdout.",
+)
+def discover(  # noqa: PLR0913
+    package: str,
+    package_type: str,
+    base_vm: str,
+    vm_user: str,
+    vm_password: str,
+    output: Path | None,
+) -> None:
     """Discover app config paths by installing in a Tart VM."""
-    click.echo("discover: not yet implemented")
+    if not TartVMManager.is_available():
+        raise click.ClickException("tart CLI not found — install tart to use 'discover'.")
+
+    async def _run() -> str:
+        async with TartVMManager(base_vm, vm_user, vm_password) as vm:
+            result = await DiscoveryRunner(vm).discover(package, package_type)
+        return result.model_dump_json(indent=2)
+
+    try:
+        json_output = asyncio.run(_run())
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json_output)
+        click.echo(f"Discovery result written to {output}", err=True)
+    else:
+        click.echo(json_output)
