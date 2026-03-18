@@ -69,11 +69,9 @@ def _state_with_security(filevault: bool | None = True, sip: bool | None = True)
 
 class TestModels:
     def test_mismatch_model(self) -> None:
-        m = Mismatch(domain="shell", field="shell.shell_type", source_value="fish", target_value="zsh")
+        m = Mismatch(domain="shell", field="shell.shell_type")
         assert m.domain == "shell"
         assert m.field == "shell.shell_type"
-        assert m.source_value == "fish"
-        assert m.target_value == "zsh"
 
     def test_domain_score_model(self) -> None:
         ds = DomainScore(domain="shell", score=0.75, total_fields=4, matching_fields=3, mismatches=["shell.env_vars"])

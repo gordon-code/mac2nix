@@ -23,8 +23,6 @@ logger = logging.getLogger(__name__)
 class Mismatch(BaseModel):
     domain: str
     field: str
-    source_value: Any
-    target_value: Any
 
 
 class DomainScore(BaseModel):
@@ -143,14 +141,7 @@ def compute_fidelity(source: SystemState, target: SystemState) -> FidelityReport
         for mismatch_desc in ds.mismatches:
             # mismatch_desc is a full dot-path like "domain.field" or "domain.sub.field".
             # Store the full path — nested paths make getattr lookups fragile.
-            all_mismatches.append(
-                Mismatch(
-                    domain=field_name,
-                    field=mismatch_desc,
-                    source_value=None,
-                    target_value=None,
-                )
-            )
+            all_mismatches.append(Mismatch(domain=field_name, field=mismatch_desc))
 
     # Overall score: weighted by total_fields per domain.
     total_weight = sum(ds.total_fields for ds in domain_scores.values())

@@ -138,6 +138,9 @@ async def async_ssh_exec(
 
     # Use sshpass -e (reads password from SSHPASS env var) to avoid exposing
     # the password in process listings (ps aux shows argv, not environment).
+    # StrictHostKeyChecking=no and UserKnownHostsFile=/dev/null: safe because
+    # target VMs are ephemeral Tart clones on localhost — no persistent host
+    # identity to verify, and the IP/key changes on every clone.
     ssh_cmd = [
         "sshpass",
         "-e",
