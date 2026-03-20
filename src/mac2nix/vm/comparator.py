@@ -123,6 +123,9 @@ for _category, _pats in _FILTER_PATTERNS.items():
 
 _DEFAULT_EXCLUDE_DIRS: list[str] = ["Spotlight", "Caches", "AssetsV2", "Pictures"]
 
+# Directory names interpolated into shell find commands must be safe.
+_SAFE_DIRNAME = re.compile(r"^[\w.\- ]+$")
+
 
 class FileSystemComparator:
     """Async filesystem snapshot and diff engine for VM-based package discovery.
@@ -146,6 +149,9 @@ class FileSystemComparator:
         self._vm = vm
         self._scan_root = scan_root
         self._exclude_dirs: list[str] = exclude_dirs if exclude_dirs is not None else list(_DEFAULT_EXCLUDE_DIRS)
+        for d in self._exclude_dirs:
+            if not _SAFE_DIRNAME.match(d):
+                raise ValueError(f"Invalid exclude directory name (must be alphanumeric/dot/hyphen/space): {d!r}")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -153,9 +159,6 @@ class FileSystemComparator:
 
     def _build_find_pipeline(self, save_path: str) -> str:
         """Return a shell pipeline string that snapshots the filesystem to *save_path*."""
-        # Note: exclude_dirs are controlled constants (_DEFAULT_EXCLUDE_DIRS) — safe
-        # to interpolate directly. The double quotes protect * from shell expansion
-        # while letting find interpret it as a glob pattern.
         prune_parts = " -or ".join(f'-path "*/{d}"' for d in self._exclude_dirs)
         prune_clause = f'\\( {prune_parts} -or -name ".localized" \\) -prune -or -print'
         quoted_root = shlex.quote(self._scan_root)
@@ -221,7 +224,6 @@ class FileSystemComparator:
         :param scan_root: Override the instance scan root for this call.
         """
         root = scan_root if scan_root is not None else self._scan_root
-        # Note: exclude_dirs are controlled constants — see _build_find_pipeline comment.
         prune_parts = " -or ".join(f'-path "*/{d}"' for d in self._exclude_dirs)
         prune_clause = f'\\( {prune_parts} -or -name ".localized" \\) -prune -or'
         ts_iso = since.replace(microsecond=0).isoformat()

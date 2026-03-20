@@ -654,6 +654,44 @@ class TestExecCommand:
         asyncio.run(_run())
         assert call_count == 1
 
+    def test_disconnect_clears_cached_ip(self) -> None:
+        async def _run() -> None:
+            mgr = _cloned_manager("cache-vm")
+            mgr._cached_ip = "10.0.0.1"
+
+            async def flaky_ssh(ip, user, pw, cmd, *, timeout):
+                return (False, "", "Connection closed by remote")
+
+            with (
+                patch.object(mgr, "get_ip", new=AsyncMock(return_value="10.0.0.2")),
+                patch("mac2nix.vm.manager.async_ssh_exec", side_effect=flaky_ssh),
+            ):
+                await mgr.exec_command(["ls"], timeout=30)
+
+            # Cache was explicitly cleared before retry (get_ip is mocked,
+            # so _cached_ip stays None — the real method would re-cache).
+            assert mgr._cached_ip is None
+
+        asyncio.run(_run())
+
+    def test_disconnect_retry_returns_false_when_no_ip(self) -> None:
+        async def _run() -> tuple[bool, str, str]:
+            mgr = _cloned_manager("no-ip-retry-vm")
+            mgr._cached_ip = "10.0.0.1"
+
+            async def disconnect_ssh(ip, user, pw, cmd, *, timeout):
+                return (False, "", "Connection closed by remote")
+
+            with (
+                patch.object(mgr, "get_ip", new=AsyncMock(return_value=None)),
+                patch("mac2nix.vm.manager.async_ssh_exec", side_effect=disconnect_ssh),
+            ):
+                return await mgr.exec_command(["ls"], timeout=30)
+
+        success, _, stderr = asyncio.run(_run())
+        assert success is False
+        assert "IP" in stderr or "ip" in stderr.lower()
+
     def test_requires_clone(self) -> None:
         async def _run() -> None:
             mgr = _make_manager()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -74,8 +74,7 @@ class TestScanCommandBasic:
         runner = CliRunner()
         state = _make_state()
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan"])
 
         assert result.exit_code == 0
@@ -84,8 +83,7 @@ class TestScanCommandBasic:
         runner = CliRunner()
         state = _make_state()
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan"])
 
         assert result.exit_code == 0
@@ -103,8 +101,7 @@ class TestScanCommandBasic:
         runner = CliRunner()
         state = _make_state()
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan"])
 
         assert result.exit_code == 0
@@ -125,8 +122,7 @@ class TestScanOutputOption:
         state = _make_state()
         output_file = tmp_path / "scan.json"
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan", "--output", str(output_file)])
 
         assert result.exit_code == 0
@@ -139,8 +135,7 @@ class TestScanOutputOption:
         state = _make_state()
         output_file = tmp_path / "scan-short.json"
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan", "-o", str(output_file)])
 
         assert result.exit_code == 0
@@ -152,8 +147,7 @@ class TestScanOutputOption:
         state = _make_state()
         output_file = tmp_path / "scan.json"
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan", "--output", str(output_file)])
 
         assert result.exit_code == 0
@@ -165,8 +159,7 @@ class TestScanOutputOption:
         state = _make_state()
         output_file = tmp_path / "nested" / "dir" / "scan.json"
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan", "--output", str(output_file)])
 
         assert result.exit_code == 0
@@ -183,8 +176,7 @@ class TestScanScannerOption:
         runner = CliRunner()
         state = _make_state()
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan", "-s", "display"])
 
         assert result.exit_code == 0
@@ -193,8 +185,7 @@ class TestScanScannerOption:
         runner = CliRunner()
         state = _make_state()
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan", "--scanner", "display", "--scanner", "audio"])
 
         assert result.exit_code == 0
@@ -210,8 +201,7 @@ class TestScanScannerOption:
         runner = CliRunner()
         state = _make_state()
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan"])
 
         assert result.exit_code == 0
@@ -228,8 +218,7 @@ class TestScanProgressOutput:
         runner = CliRunner()
         state = _make_state()
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan"])
 
         assert result.exit_code == 0
@@ -248,8 +237,7 @@ class TestScanErrorHandling:
     def test_orchestrator_exception_exits_nonzero(self) -> None:
         runner = CliRunner()
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.side_effect = RuntimeError("orchestrator failed")
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(side_effect=RuntimeError("orchestrator failed"))):
             result = runner.invoke(main, ["scan"])
 
         assert result.exit_code != 0
@@ -260,8 +248,7 @@ class TestScanErrorHandling:
         state = _make_state()
         output_file = tmp_path / "scan.json"
 
-        with patch("mac2nix.cli.asyncio") as mock_asyncio:
-            mock_asyncio.run.return_value = state
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
             result = runner.invoke(main, ["scan", "--output", str(output_file)])
 
         assert result.exit_code == 0

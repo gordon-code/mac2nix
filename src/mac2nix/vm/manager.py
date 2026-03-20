@@ -222,6 +222,10 @@ class TartVMManager:
         # Detect transient disconnect and retry once.
         if not success and self._is_disconnect(err):
             logger.info("SSH disconnect detected for %r — retrying once (timeout=%ds)", clone, timeout * 2)
+            self._cached_ip = None  # IP may have changed — force re-lookup
+            ip = await self.get_ip()
+            if not ip:
+                return False, "", "Could not get VM IP address after disconnect"
             success, out, err = await self._ssh_exec_raw(ip, cmd, timeout=timeout * 2)
             if not success:
                 logger.warning("Retry also failed for %r: %s", clone, err.strip())

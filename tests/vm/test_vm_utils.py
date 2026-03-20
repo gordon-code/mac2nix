@@ -159,11 +159,17 @@ class TestAsyncRunCommand:
         proc.kill = MagicMock()
         proc.communicate = AsyncMock(side_effect=[TimeoutError(), (b"", b"")])
 
+        def closing_wait_for(coro, *_args, **_kwargs):
+            """Close the coroutine before raising, mirroring real wait_for's task cancellation."""
+            if hasattr(coro, "close"):
+                coro.close()
+            raise TimeoutError
+
         async def _run() -> None:
             with (
                 patch("mac2nix.vm._utils.shutil.which", return_value="/usr/bin/sleep"),
                 patch("mac2nix.vm._utils.asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
-                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=TimeoutError),
+                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=closing_wait_for),
             ):
                 await async_run_command(["sleep", "999"], timeout=1)
 
@@ -177,11 +183,17 @@ class TestAsyncRunCommand:
         # Second communicate() call (after kill) returns empty bytes
         proc.communicate = AsyncMock(return_value=(b"", b""))
 
+        def closing_wait_for(coro, *_args, **_kwargs):
+            """Close the coroutine before raising, mirroring real wait_for's task cancellation."""
+            if hasattr(coro, "close"):
+                coro.close()
+            raise TimeoutError
+
         async def _run() -> None:
             with (
                 patch("mac2nix.vm._utils.shutil.which", return_value="/usr/bin/sleep"),
                 patch("mac2nix.vm._utils.asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
-                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=TimeoutError),
+                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=closing_wait_for),
             ):
                 await async_run_command(["sleep", "999"], timeout=1)
 

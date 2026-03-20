@@ -123,7 +123,7 @@ def generate() -> None:
 )
 @click.option("--base-vm", default="base-macos", show_default=True, help="Base Tart VM name.")
 @click.option("--vm-user", default="admin", show_default=True, help="SSH username inside the VM.")
-@click.option("--vm-password", default="admin", show_default=True, help="SSH password inside the VM.")
+@click.option("--vm-password", default="admin", show_default=False, help="SSH password inside the VM.")
 def validate(
     flake_path: Path,
     scan_file: Path,
@@ -183,7 +183,7 @@ def diff() -> None:
 )
 @click.option("--base-vm", default="base-macos", show_default=True, help="Base Tart VM name.")
 @click.option("--vm-user", default="admin", show_default=True, help="SSH username inside the VM.")
-@click.option("--vm-password", default="admin", show_default=True, help="SSH password inside the VM.")
+@click.option("--vm-password", default="admin", show_default=False, help="SSH password inside the VM.")
 @click.option(
     "--output",
     "-o",

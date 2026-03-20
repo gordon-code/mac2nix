@@ -63,6 +63,26 @@ class TestConstructor:
         fc._exclude_dirs.append("extra")
         assert "extra" not in _DEFAULT_EXCLUDE_DIRS
 
+    def test_unsafe_exclude_dir_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid exclude directory name"):
+            FileSystemComparator(_make_vm(), exclude_dirs=['"; rm -rf /'])
+
+    def test_safe_exclude_dir_with_spaces_accepted(self) -> None:
+        fc = FileSystemComparator(_make_vm(), exclude_dirs=["My Dir"])
+        assert fc._exclude_dirs == ["My Dir"]
+
+    def test_safe_exclude_dir_with_dots_accepted(self) -> None:
+        fc = FileSystemComparator(_make_vm(), exclude_dirs=["com.apple.caches"])
+        assert fc._exclude_dirs == ["com.apple.caches"]
+
+    def test_slash_in_exclude_dir_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid exclude directory name"):
+            FileSystemComparator(_make_vm(), exclude_dirs=["Sub/Dir"])
+
+    def test_empty_string_exclude_dir_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid exclude directory name"):
+            FileSystemComparator(_make_vm(), exclude_dirs=[""])
+
 
 # ---------------------------------------------------------------------------
 # filter_noise() — per-category
