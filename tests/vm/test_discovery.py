@@ -280,6 +280,50 @@ class TestDiscoverSuccess:
 # ---------------------------------------------------------------------------
 
 
+class TestDiscoverPackageValidation:
+    def test_invalid_package_name_raises_vm_error(self) -> None:
+        vm = _make_vm()
+        comp = _make_comparator()
+
+        async def _run() -> None:
+            runner = DiscoveryRunner(vm)
+            with _patch_comparator(comp):
+                await runner.discover('"; rm -rf /')
+
+        with pytest.raises(VMError, match="Invalid package name"):
+            asyncio.run(_run())
+
+    def test_valid_package_name_accepted(self) -> None:
+        vm = _make_vm()
+        comp = _make_comparator()
+
+        async def _run() -> DiscoveryResult:
+            runner = DiscoveryRunner(vm)
+            with (
+                _patch_comparator(comp),
+                patch("mac2nix.vm.discovery.asyncio.sleep", new=AsyncMock()),
+            ):
+                return await runner.discover("homebrew/core/wget")
+
+        result = asyncio.run(_run())
+        assert result.package == "homebrew/core/wget"
+
+    def test_package_with_at_sign_accepted(self) -> None:
+        vm = _make_vm()
+        comp = _make_comparator()
+
+        async def _run() -> DiscoveryResult:
+            runner = DiscoveryRunner(vm)
+            with (
+                _patch_comparator(comp),
+                patch("mac2nix.vm.discovery.asyncio.sleep", new=AsyncMock()),
+            ):
+                return await runner.discover("python@3.13")
+
+        result = asyncio.run(_run())
+        assert result.package == "python@3.13"
+
+
 class TestDiscoverCloneStartFailure:
     def test_clone_failure_reraises_vm_error(self) -> None:
         vm = _make_vm(clone_raises=VMError("VM not found"))
@@ -907,6 +951,24 @@ class TestExecuteFound:
         assert len(captured_cmds) >= 2
         launch_pipeline = captured_cmds[1][2]
         assert "MyApp.app/Contents/MacOS/MyApp" in launch_pipeline
+
+    def test_app_bundle_skipped_when_executable_name_suspicious(self) -> None:
+        """If CFBundleExecutable contains path traversal, the app should be skipped."""
+        vm = _make_vm()
+
+        async def recording_exec(cmd: list[str], **_kw) -> tuple[bool, str, str]:
+            return (True, "../../usr/bin/malicious", "")  # path traversal in name
+
+        vm.exec_command = AsyncMock(side_effect=recording_exec)
+
+        async def _run() -> None:
+            runner = DiscoveryRunner(vm)
+            with patch("mac2nix.vm.discovery.asyncio.sleep", new=AsyncMock()):
+                await runner._execute_found({"apps": ["/Applications/Evil.app"], "binaries": []})
+
+        asyncio.run(_run())
+        # Should have been called once (defaults read) but NOT a second time (launch skipped)
+        assert vm.exec_command.call_count == 1
 
     def test_app_bundle_skipped_when_defaults_read_fails(self) -> None:
         """If defaults read fails, the app launch should be skipped (not crashed)."""
