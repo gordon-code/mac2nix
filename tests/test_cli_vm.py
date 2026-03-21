@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -113,7 +114,7 @@ class TestValidateSuccess:
         flake_dir = tmp_path / "flake"
         flake_dir.mkdir()
 
-        called_with_coroutine = False
+        received_coroutine = False
 
         runner = CliRunner()
         with (
@@ -122,8 +123,8 @@ class TestValidateSuccess:
         ):
 
             def fake_run(coro: object) -> None:  # type: ignore[return]
-                nonlocal called_with_coroutine
-                called_with_coroutine = coro is not None
+                nonlocal received_coroutine
+                received_coroutine = inspect.iscoroutine(coro)
                 # Close the coroutine to avoid RuntimeWarning
                 if hasattr(coro, "close"):
                     coro.close()
@@ -135,7 +136,7 @@ class TestValidateSuccess:
             )
 
         assert result.exit_code == 0
-        assert called_with_coroutine, "asyncio.run was not called with a coroutine"
+        assert received_coroutine, "asyncio.run was not called with a real coroutine"
 
     def test_missing_scan_file_exits_nonzero(self, tmp_path: Path) -> None:
         flake_dir = tmp_path / "flake"

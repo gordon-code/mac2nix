@@ -234,10 +234,18 @@ class TestScanProgressOutput:
 
 
 class TestScanErrorHandling:
-    def test_orchestrator_exception_exits_nonzero(self) -> None:
+    def test_orchestrator_runtime_error_exits_nonzero(self) -> None:
         runner = CliRunner()
 
         with patch("mac2nix.cli.run_scan", new=AsyncMock(side_effect=RuntimeError("orchestrator failed"))):
+            result = runner.invoke(main, ["scan"])
+
+        assert result.exit_code != 0
+
+    def test_orchestrator_non_runtime_error_exits_nonzero(self) -> None:
+        runner = CliRunner()
+
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(side_effect=OSError("disk full"))):
             result = runner.invoke(main, ["scan"])
 
         assert result.exit_code != 0

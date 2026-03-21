@@ -35,6 +35,9 @@ _BINARY_PROBE_OPTIONS = ("--version", "--help", "-v")
 # CFBundleExecutable must be a bare filename — no path separators or shell metacharacters.
 _SAFE_EXECUTABLE_NAME = re.compile(r"^[A-Za-z0-9_.\- ]+$")
 
+# Homebrew package names: lowercase, digits, @, dot, underscore, hyphen, slash (for taps).
+_SAFE_PACKAGE_NAME = re.compile(r"^[a-zA-Z0-9@._/\-]+$")
+
 
 # ---------------------------------------------------------------------------
 # Model
@@ -89,6 +92,9 @@ class DiscoveryRunner:
         lists so callers can distinguish "couldn't run" from "nothing changed".
         Cleanup always runs.
         """
+        if not _SAFE_PACKAGE_NAME.match(package):
+            raise VMError(f"Invalid package name: {package!r}")
+
         clone_name = f"mac2nix-discover-{package.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
         comparator = FileSystemComparator(self._vm)
 

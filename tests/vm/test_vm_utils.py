@@ -178,6 +178,30 @@ class TestAsyncRunCommand:
 
         proc.kill.assert_called_once()
 
+    def test_timeout_forwards_timeout_value_to_wait_for(self) -> None:
+        """Verify the timeout= kwarg is forwarded from async_run_command to asyncio.wait_for."""
+        proc = _make_proc(returncode=0)
+        captured_timeout: list[int] = []
+
+        def capturing_wait_for(coro, timeout=None, **_kw):
+            captured_timeout.append(timeout)
+            if hasattr(coro, "close"):
+                coro.close()
+            raise TimeoutError
+
+        async def _run() -> None:
+            with (
+                patch("mac2nix.vm._utils.shutil.which", return_value="/usr/bin/sleep"),
+                patch("mac2nix.vm._utils.asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
+                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=capturing_wait_for),
+            ):
+                await async_run_command(["sleep", "999"], timeout=42)
+
+        with pytest.raises(VMTimeoutError):
+            asyncio.run(_run())
+
+        assert captured_timeout == [42]
+
     def test_file_not_found_during_exec_raises_vm_error(self) -> None:
         async def _run() -> None:
             with (
