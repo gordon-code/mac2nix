@@ -14,7 +14,6 @@ from mac2nix.vm._utils import (
     async_run_command,
     async_ssh_exec,
     is_sshpass_available,
-    is_tart_available,
 )
 
 # ---------------------------------------------------------------------------
@@ -51,13 +50,7 @@ class TestExceptionHierarchy:
 
 
 class TestIsToolAvailable:
-    def test_tart_available_when_on_path(self) -> None:
-        with patch("mac2nix.vm._utils.shutil.which", return_value="/usr/local/bin/tart"):
-            assert is_tart_available() is True
-
-    def test_tart_unavailable_when_not_on_path(self) -> None:
-        with patch("mac2nix.vm._utils.shutil.which", return_value=None):
-            assert is_tart_available() is False
+    # tart availability tested in test_manager.py::TestConstructor
 
     def test_sshpass_available_when_on_path(self) -> None:
         with patch("mac2nix.vm._utils.shutil.which", return_value="/usr/bin/sshpass"):
@@ -66,18 +59,6 @@ class TestIsToolAvailable:
     def test_sshpass_unavailable_when_not_on_path(self) -> None:
         with patch("mac2nix.vm._utils.shutil.which", return_value=None):
             assert is_sshpass_available() is False
-
-    def test_tart_checks_tart_binary(self) -> None:
-        calls: list[str] = []
-
-        def recording_which(name: str) -> str | None:
-            calls.append(name)
-            return "/usr/local/bin/tart"
-
-        with patch("mac2nix.vm._utils.shutil.which", side_effect=recording_which):
-            is_tart_available()
-
-        assert calls == ["tart"]
 
     def test_sshpass_checks_sshpass_binary(self) -> None:
         calls: list[str] = []
@@ -104,6 +85,13 @@ def _make_proc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") ->
     proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.kill = MagicMock()
     return proc
+
+
+def _closing_wait_for(coro, *_args, **_kwargs):
+    """Close the coroutine before raising, mirroring real wait_for's task cancellation."""
+    if hasattr(coro, "close"):
+        coro.close()
+    raise TimeoutError
 
 
 class TestAsyncRunCommand:
@@ -159,17 +147,11 @@ class TestAsyncRunCommand:
         proc.kill = MagicMock()
         proc.communicate = AsyncMock(side_effect=[TimeoutError(), (b"", b"")])
 
-        def closing_wait_for(coro, *_args, **_kwargs):
-            """Close the coroutine before raising, mirroring real wait_for's task cancellation."""
-            if hasattr(coro, "close"):
-                coro.close()
-            raise TimeoutError
-
         async def _run() -> None:
             with (
                 patch("mac2nix.vm._utils.shutil.which", return_value="/usr/bin/sleep"),
                 patch("mac2nix.vm._utils.asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
-                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=closing_wait_for),
+                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=_closing_wait_for),
             ):
                 await async_run_command(["sleep", "999"], timeout=1)
 
@@ -183,17 +165,11 @@ class TestAsyncRunCommand:
         # Second communicate() call (after kill) returns empty bytes
         proc.communicate = AsyncMock(return_value=(b"", b""))
 
-        def closing_wait_for(coro, *_args, **_kwargs):
-            """Close the coroutine before raising, mirroring real wait_for's task cancellation."""
-            if hasattr(coro, "close"):
-                coro.close()
-            raise TimeoutError
-
         async def _run() -> None:
             with (
                 patch("mac2nix.vm._utils.shutil.which", return_value="/usr/bin/sleep"),
                 patch("mac2nix.vm._utils.asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
-                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=closing_wait_for),
+                patch("mac2nix.vm._utils.asyncio.wait_for", side_effect=_closing_wait_for),
             ):
                 await async_run_command(["sleep", "999"], timeout=1)
 

@@ -33,11 +33,6 @@ class VMTimeoutError(VMError):
 # ---------------------------------------------------------------------------
 
 
-def is_tart_available() -> bool:
-    """Return True if the tart CLI is on PATH."""
-    return shutil.which("tart") is not None
-
-
 def is_sshpass_available() -> bool:
     """Return True if sshpass is on PATH."""
     return shutil.which("sshpass") is not None

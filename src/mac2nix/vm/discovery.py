@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
 import uuid
 from datetime import UTC, datetime
@@ -30,6 +31,9 @@ _EXEC_SEARCH_DIRS = (
 
 # Binary options tried to trigger config file creation.
 _BINARY_PROBE_OPTIONS = ("--version", "--help", "-v")
+
+# CFBundleExecutable must be a bare filename — no path separators or shell metacharacters.
+_SAFE_EXECUTABLE_NAME = re.compile(r"^[A-Za-z0-9_.\- ]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +238,9 @@ class DiscoveryRunner:
             )
             if ok:
                 executable_name = out.strip()
+                if not _SAFE_EXECUTABLE_NAME.match(executable_name):
+                    logger.warning("Suspicious CFBundleExecutable %r in %s — skipping", executable_name, app_path)
+                    continue
                 launch_cmd = (
                     f"{shlex.quote(app_path + '/Contents/MacOS/' + executable_name)} >/dev/null 2>&1 & sleep 0.1"
                 )

@@ -124,7 +124,7 @@ for _category, _pats in _FILTER_PATTERNS.items():
 _DEFAULT_EXCLUDE_DIRS: list[str] = ["Spotlight", "Caches", "AssetsV2", "Pictures"]
 
 # Directory names interpolated into shell find commands must be safe.
-_SAFE_DIRNAME = re.compile(r"^[\w.\- ]+$")
+_SAFE_DIRNAME = re.compile(r"^[A-Za-z0-9_.\- ]+$")
 
 
 class FileSystemComparator:
@@ -178,7 +178,7 @@ class FileSystemComparator:
     async def snapshot(self, save_path: str) -> None:
         """Take a sorted filesystem snapshot on the VM and save it to *save_path*.
 
-        Runs a remote ``find | sed | sort > path`` pipeline via bash.
+        Runs a remote ``find | awk | sort > path`` pipeline via bash.
         Raises :exc:`VMError` if the command fails.
         """
         pipeline = self._build_find_pipeline(save_path)
