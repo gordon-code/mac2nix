@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from pathlib import Path
 
 import click
@@ -150,6 +151,9 @@ def validate(
 
     async def _run() -> None:
         async with TartVMManager(base_vm, vm_user, vm_password) as vm:
+            clone_name = f"mac2nix-validate-{uuid.uuid4().hex[:8]}"
+            await vm.clone(clone_name)
+            await vm.start()
             result = await Validator(vm).validate(flake_path, source_state)
 
         if result.errors:

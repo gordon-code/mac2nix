@@ -674,7 +674,7 @@ class TestFindNewExecutables:
 
         async def _run() -> dict:
             runner = DiscoveryRunner(vm)
-            return await runner._find_new_executables("wget")
+            return await runner._find_new_executables("wget", "/tmp/before-exec.txt")
 
         result = asyncio.run(_run())
         assert result == {"apps": [], "binaries": []}
@@ -696,7 +696,7 @@ class TestFindNewExecutables:
 
         async def _run() -> dict:
             runner = DiscoveryRunner(vm)
-            return await runner._find_new_executables("myapp")
+            return await runner._find_new_executables("myapp", "/tmp/before-exec.txt")
 
         result = asyncio.run(_run())
         assert "/Applications/MyApp.app" in result["apps"]
@@ -719,7 +719,7 @@ class TestFindNewExecutables:
 
         async def _run() -> dict:
             runner = DiscoveryRunner(vm)
-            return await runner._find_new_executables("wget")
+            return await runner._find_new_executables("wget", "/tmp/before-exec.txt")
 
         result = asyncio.run(_run())
         assert result["apps"] == []
@@ -743,7 +743,7 @@ class TestFindNewExecutables:
 
         async def _run() -> dict:
             runner = DiscoveryRunner(vm)
-            return await runner._find_new_executables("wget")
+            return await runner._find_new_executables("wget", "/tmp/before-exec.txt")
 
         result = asyncio.run(_run())
         assert "" not in result["binaries"]
@@ -766,7 +766,7 @@ class TestFindNewExecutables:
 
         async def _run() -> dict:
             runner = DiscoveryRunner(vm)
-            return await runner._find_new_executables("wget")
+            return await runner._find_new_executables("wget", "/tmp/before-exec.txt")
 
         result = asyncio.run(_run())
         assert result == {"apps": [], "binaries": []}
@@ -788,7 +788,7 @@ class TestFindNewExecutables:
 
         async def _run() -> None:
             runner = DiscoveryRunner(vm)
-            await runner._find_new_executables("wget")
+            await runner._find_new_executables("wget", "/tmp/before-exec.txt")
 
         asyncio.run(_run())
         assert rm_called
@@ -810,11 +810,34 @@ class TestFindNewExecutables:
 
         async def _run() -> None:
             runner = DiscoveryRunner(vm)
-            await runner._find_new_executables("myspecialpkg")
+            await runner._find_new_executables("myspecialpkg", "/tmp/before-exec.txt")
 
         asyncio.run(_run())
         assert find_pipeline
         assert "myspecialpkg" in find_pipeline[0]
+
+    def test_before_exec_path_used_in_comm(self) -> None:
+        """The before_exec_path parameter must appear in the comm command."""
+        vm = _make_vm()
+        comm_cmds: list[str] = []
+        call_count = 0
+
+        async def exec_side_effect(cmd: list[str], **_kw) -> tuple[bool, str, str]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:  # comm command (after find)
+                comm_cmds.append(cmd[2])
+            return (True, "", "")
+
+        vm.exec_command = AsyncMock(side_effect=exec_side_effect)
+
+        async def _run() -> None:
+            runner = DiscoveryRunner(vm)
+            await runner._find_new_executables("wget", "/tmp/custom-before.txt")
+
+        asyncio.run(_run())
+        assert comm_cmds
+        assert "/tmp/custom-before.txt" in comm_cmds[0]
 
 
 # ---------------------------------------------------------------------------
@@ -905,38 +928,13 @@ class TestExecuteFound:
         asyncio.run(_run())
         assert sleep_calls == []
 
-    def test_app_bundle_info_plist_read(self) -> None:
+    def test_app_probe_single_ssh_call(self) -> None:
+        """Each app bundle is probed in a single SSH call (xattr + plist read + validate + launch)."""
         vm = _make_vm()
         captured_cmds: list[list[str]] = []
 
         async def recording_exec(cmd: list[str], **_kw) -> tuple[bool, str, str]:
             captured_cmds.append(cmd)
-            return (True, "MyApp", "")  # defaults read returns executable name
-
-        vm.exec_command = AsyncMock(side_effect=recording_exec)
-
-        async def _run() -> None:
-            runner = DiscoveryRunner(vm)
-            with patch("mac2nix.vm.discovery.asyncio.sleep", new=AsyncMock()):
-                await runner._execute_found({"apps": ["/Applications/MyApp.app"], "binaries": []})
-
-        asyncio.run(_run())
-        # First call: defaults read to get CFBundleExecutable
-        pipeline0 = captured_cmds[0][2]
-        assert "CFBundleExecutable" in pipeline0
-        assert "MyApp.app" in pipeline0
-
-    def test_app_launch_uses_executable_name(self) -> None:
-        vm = _make_vm()
-        captured_cmds: list[list[str]] = []
-        call_count = 0
-
-        async def recording_exec(cmd: list[str], **_kw) -> tuple[bool, str, str]:
-            nonlocal call_count
-            call_count += 1
-            captured_cmds.append(cmd)
-            if call_count == 1:
-                return (True, "MyApp", "")  # CFBundleExecutable = "MyApp"
             return (True, "", "")
 
         vm.exec_command = AsyncMock(side_effect=recording_exec)
@@ -947,45 +945,30 @@ class TestExecuteFound:
                 await runner._execute_found({"apps": ["/Applications/MyApp.app"], "binaries": []})
 
         asyncio.run(_run())
-        # Second call: launch the app
-        assert len(captured_cmds) >= 2
-        launch_pipeline = captured_cmds[1][2]
-        assert "MyApp.app/Contents/MacOS/MyApp" in launch_pipeline
+        # Exactly one exec_command call per app
+        assert len(captured_cmds) == 1
+        script = captured_cmds[0][2]
+        assert "CFBundleExecutable" in script
+        assert "MyApp.app" in script
+        assert "Contents/MacOS" in script
+        assert "grep" in script  # bash-side name validation
 
-    def test_app_bundle_skipped_when_executable_name_suspicious(self) -> None:
-        """If CFBundleExecutable contains path traversal, the app should be skipped."""
+    def test_app_probe_does_not_raise_on_failure(self) -> None:
+        """If the combined probe script fails, the app is skipped without crashing."""
         vm = _make_vm()
 
-        async def recording_exec(cmd: list[str], **_kw) -> tuple[bool, str, str]:
-            return (True, "../../usr/bin/malicious", "")  # path traversal in name
+        async def failing_exec(cmd: list[str], **_kw) -> tuple[bool, str, str]:
+            return (False, "", "some error")
 
-        vm.exec_command = AsyncMock(side_effect=recording_exec)
+        vm.exec_command = AsyncMock(side_effect=failing_exec)
 
         async def _run() -> None:
             runner = DiscoveryRunner(vm)
             with patch("mac2nix.vm.discovery.asyncio.sleep", new=AsyncMock()):
-                await runner._execute_found({"apps": ["/Applications/Evil.app"], "binaries": []})
-
-        asyncio.run(_run())
-        # Should have been called once (defaults read) but NOT a second time (launch skipped)
-        assert vm.exec_command.call_count == 1
-
-    def test_app_bundle_skipped_when_defaults_read_fails(self) -> None:
-        """If defaults read fails, the app launch should be skipped (not crashed)."""
-        vm = _make_vm()
-
-        async def recording_exec(cmd: list[str], **_kw) -> tuple[bool, str, str]:
-            return (False, "", "defaults: error")  # all calls fail
-
-        vm.exec_command = AsyncMock(side_effect=recording_exec)
-
-        async def _run() -> None:
-            runner = DiscoveryRunner(vm)
-            with patch("mac2nix.vm.discovery.asyncio.sleep", new=AsyncMock()):
-                # Should not raise
                 await runner._execute_found({"apps": ["/Applications/Broken.app"], "binaries": []})
 
         asyncio.run(_run())  # Must not raise
+        assert vm.exec_command.call_count == 1
 
     def test_multiple_binaries_batched_into_one_command(self) -> None:
         vm = _make_vm()

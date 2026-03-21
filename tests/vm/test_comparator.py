@@ -45,6 +45,10 @@ class TestConstructor:
         fc = FileSystemComparator(_make_vm(), scan_root="/custom/root")
         assert fc._scan_root == "/custom/root"
 
+    def test_trailing_slash_stripped_from_scan_root(self) -> None:
+        fc = FileSystemComparator(_make_vm(), scan_root="/System/Volumes/Data/")
+        assert fc._scan_root == "/System/Volumes/Data"
+
     def test_default_exclude_dirs_matches_module_default(self) -> None:
         fc = FileSystemComparator(_make_vm())
         assert fc._exclude_dirs == list(_DEFAULT_EXCLUDE_DIRS)

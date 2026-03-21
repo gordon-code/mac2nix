@@ -53,7 +53,7 @@ jobs:
           brew install sshpass
 
       - name: Pull base VM image
-        run: tart pull ghcr.io/cirruslabs/macos-sequoia-base:latest
+        run: tart pull ghcr.io/cirruslabs/macos-sequoia-base@sha256:6d2fcc3b4f669e5fec2c567bd991cfb14b527532a288177ce29fc7eb1ee575c2 # latest
 
       - name: Integration tests
         env:

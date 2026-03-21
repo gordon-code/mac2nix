@@ -56,23 +56,30 @@ def shared_vm() -> TartVMManager:
         await mgr.clone(clone_name)
         await mgr.start()
 
-    asyncio.run(_setup())
+    def _sync_cleanup() -> None:
+        if mgr._vm_process is not None:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                mgr._vm_process.kill()
+            mgr._vm_process = None
+        subprocess.run(  # noqa: S603
+            ["tart", "stop", clone_name],  # noqa: S607
+            capture_output=True,
+            check=False,
+        )
+        subprocess.run(  # noqa: S603
+            ["tart", "delete", clone_name],  # noqa: S607
+            capture_output=True,
+            check=False,
+        )
+
+    try:
+        asyncio.run(_setup())
+    except Exception:
+        _sync_cleanup()
+        raise
+
     yield mgr  # type: ignore[misc]
 
     # Cleanup via sync subprocess — the asyncio.subprocess.Process from start()
     # is tied to the setup event loop which is now closed.
-    if mgr._vm_process is not None:
-        with contextlib.suppress(ProcessLookupError, OSError):
-            mgr._vm_process.kill()
-        mgr._vm_process = None
-
-    subprocess.run(  # noqa: S603
-        ["tart", "stop", clone_name],  # noqa: S607
-        capture_output=True,
-        check=False,
-    )
-    subprocess.run(  # noqa: S603
-        ["tart", "delete", clone_name],  # noqa: S607
-        capture_output=True,
-        check=False,
-    )
+    _sync_cleanup()

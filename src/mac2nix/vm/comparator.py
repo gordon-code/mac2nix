@@ -147,7 +147,7 @@ class FileSystemComparator:
         exclude_dirs: list[str] | None = None,
     ) -> None:
         self._vm = vm
-        self._scan_root = scan_root
+        self._scan_root = scan_root.rstrip("/")
         self._exclude_dirs: list[str] = exclude_dirs if exclude_dirs is not None else list(_DEFAULT_EXCLUDE_DIRS)
         for d in self._exclude_dirs:
             if not _SAFE_DIRNAME.match(d):

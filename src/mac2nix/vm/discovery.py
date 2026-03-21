@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Remote snapshot paths inside the VM.
 _REMOTE_BEFORE = "/tmp/mac2nix-before.txt"  # noqa: S108
 _REMOTE_AFTER = "/tmp/mac2nix-after.txt"  # noqa: S108
+_REMOTE_BEFORE_EXEC = "/tmp/mac2nix-before-exec.txt"  # noqa: S108
 
 # Directories searched for new executables/app bundles.
 _EXEC_SEARCH_DIRS = (
@@ -31,9 +32,6 @@ _EXEC_SEARCH_DIRS = (
 
 # Binary options tried to trigger config file creation.
 _BINARY_PROBE_OPTIONS = ("--version", "--help", "-v")
-
-# CFBundleExecutable must be a bare filename — no path separators or shell metacharacters.
-_SAFE_EXECUTABLE_NAME = re.compile(r"^[A-Za-z0-9_.\- ]+$")
 
 # Homebrew package names: lowercase, digits, @, dot, underscore, hyphen, slash (for taps).
 _SAFE_PACKAGE_NAME = re.compile(r"^[a-zA-Z0-9@._/\-]+$")
@@ -110,6 +108,11 @@ class DiscoveryRunner:
                 logger.error("Pre-snapshot failed for %r: %s", package, exc)
                 return self._empty_result(package, package_type)
 
+            # Step 2b: Pre-installation executable snapshot (absolute paths).
+            if not await self._snapshot_executables(_REMOTE_BEFORE_EXEC):
+                logger.error("Pre-exec snapshot failed for %r — executable discovery will be skipped", package)
+                return self._empty_result(package, package_type)
+
             # Step 3: Install the package.
             install_ok = await self._install_package(package, package_type)
             if not install_ok:
@@ -120,7 +123,7 @@ class DiscoveryRunner:
 
             # Step 5 & 6: Find and execute new executables.
             install_timestamp = datetime.now(UTC)
-            executables = await self._find_new_executables(package)
+            executables = await self._find_new_executables(package, _REMOTE_BEFORE_EXEC)
             await self._execute_found(executables)
 
             # Step 7: Post-installation snapshot.
@@ -167,6 +170,25 @@ class DiscoveryRunner:
             executables_found=executables_found or {},
         )
 
+    @staticmethod
+    def _build_exec_find_pipeline(save_path: str) -> str:
+        """Build a find pipeline for executable discovery, saving sorted results to *save_path*."""
+        search_dirs = " ".join(shlex.quote(d) for d in _EXEC_SEARCH_DIRS)
+        return (
+            f"find {search_dirs} -maxdepth 2"
+            r" \( -name '*.app' -type d -o \( -type f -o -type l \) -perm +111 \)"
+            " 2>/dev/null"
+            f" | sort > {shlex.quote(save_path)}"
+        )
+
+    async def _snapshot_executables(self, save_path: str) -> bool:
+        """Snapshot executable locations to *save_path* (absolute paths, sorted)."""
+        pipeline = self._build_exec_find_pipeline(save_path)
+        ok, _out, err = await self._vm.exec_command(["bash", "-c", pipeline], timeout=30)
+        if not ok:
+            logger.warning("Failed to snapshot executables to %s: %s", save_path, err.strip())
+        return ok
+
     async def _install_package(self, package: str, package_type: str) -> bool:
         """Install *package* via brew. Returns True on success."""
         # Use bash -c with shlex.quote to prevent shell injection via package name.
@@ -179,27 +201,21 @@ class DiscoveryRunner:
             logger.warning("Installation failed for %r: %s", package, err.strip())
         return ok
 
-    async def _find_new_executables(self, package: str) -> dict[str, list[str]]:
-        """Return new .app bundles and binaries created since the pre-snapshot."""
+    async def _find_new_executables(self, package: str, before_exec_path: str) -> dict[str, list[str]]:
+        """Return new .app bundles and binaries created since the pre-exec snapshot."""
         executables: dict[str, list[str]] = {"apps": [], "binaries": []}
 
-        search_dirs = " ".join(_EXEC_SEARCH_DIRS)
         temp_path = f"/tmp/mac2nix-exec-{package.replace('/', '-')}.txt"  # noqa: S108
 
-        # Find all .app bundles and executable files/symlinks in well-known dirs.
-        find_pipeline = (
-            f"find {search_dirs}"
-            r" \( -name '*.app' -type d -o \( -type f -o -type l \) -perm +111 \)"
-            " -maxdepth 2 2>/dev/null"
-            f" | sort > {shlex.quote(temp_path)}"
-        )
+        # Same find pipeline format as _snapshot_executables (shared via _build_exec_find_pipeline).
+        find_pipeline = self._build_exec_find_pipeline(temp_path)
         ok, _out, err = await self._vm.exec_command(["bash", "-c", find_pipeline], timeout=30)
         if not ok:
             logger.warning("Failed to find executables for %r: %s", package, err.strip())
             return executables
 
-        # comm -13: lines only in second file = newly appeared since before-snapshot.
-        comm_cmd = f"comm -13 {shlex.quote(_REMOTE_BEFORE)} {shlex.quote(temp_path)}"
+        # comm -13: lines only in second file = newly appeared since before-exec snapshot.
+        comm_cmd = f"comm -13 {shlex.quote(before_exec_path)} {shlex.quote(temp_path)}"
         ok, out, err = await self._vm.exec_command(["bash", "-c", comm_cmd], timeout=15)
 
         # Best-effort cleanup of temp file.
@@ -232,28 +248,22 @@ class DiscoveryRunner:
             return
 
         # Launch .app bundles in background via their CFBundleExecutable.
+        # Single SSH call per app: xattr clear + plist read + name validation + launch.
         for app_path in executables["apps"]:
             q_app = shlex.quote(app_path)
-            ok, out, err = await self._vm.exec_command(
-                [
-                    "bash",
-                    "-c",
-                    f"sudo xattr -rc {q_app} >/dev/null 2>&1 || true;"
-                    f" defaults read {shlex.quote(app_path + '/Contents/Info.plist')} CFBundleExecutable",
-                ],
+            q_plist = shlex.quote(app_path + "/Contents/Info.plist")
+            probe_script = (
+                f"sudo xattr -rc {q_app} >/dev/null 2>&1 || true; "
+                f"exe=$(defaults read {q_plist} CFBundleExecutable 2>/dev/null) || exit 0; "
+                # Validate executable name — bare alphanumeric + dots/hyphens/underscores/spaces.
+                f'printf "%s" "$exe" | grep -qxE "^[A-Za-z0-9_. -]+$" || exit 0; '
+                f'{q_app}/Contents/MacOS/"$exe" >/dev/null 2>&1 & sleep 0.1'
             )
+            ok, _out, err = await self._vm.exec_command(["bash", "-c", probe_script], timeout=5)
             if ok:
-                executable_name = out.strip()
-                if not _SAFE_EXECUTABLE_NAME.match(executable_name):
-                    logger.warning("Suspicious CFBundleExecutable %r in %s — skipping", executable_name, app_path)
-                    continue
-                launch_cmd = (
-                    f"{shlex.quote(app_path + '/Contents/MacOS/' + executable_name)} >/dev/null 2>&1 & sleep 0.1"
-                )
-                await self._vm.exec_command(["bash", "-c", launch_cmd], timeout=2)
-                logger.debug("Launched app bundle: %s", app_path)
+                logger.debug("Probed app bundle: %s", app_path)
             else:
-                logger.debug("Could not identify executable in %s: %s", app_path, err.strip())
+                logger.debug("Could not probe %s: %s", app_path, err.strip())
 
         # Probe binaries with --version / --help to trigger config writes.
         if executables["binaries"]:

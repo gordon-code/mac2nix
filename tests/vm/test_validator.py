@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 
 from mac2nix.models.services import ShellConfig
 from mac2nix.models.system import NetworkConfig, SecurityState
@@ -179,6 +180,43 @@ class TestScoreDomain:
         assert ds.score == 1.0
         # 2 list fields (firewall_app_rules, custom_certificates) have default [] (non-None)
         assert ds.total_fields == 2
+
+    def test_nested_model_recursion(self) -> None:
+        """Nested BaseModel fields are scored recursively, expanding total_fields."""
+
+        class _Inner(BaseModel):
+            x: str | None = None
+            y: str | None = None
+
+        class _Outer(BaseModel):
+            inner: _Inner | None = None
+            top: str | None = None
+
+        src = _Outer(inner=_Inner(x="a", y="b"), top="c")
+        tgt = _Outer(inner=_Inner(x="a", y="z"), top="c")
+        ds = _score_domain("outer", src, tgt)
+        # top matches (1), inner.x matches (1), inner.y mismatches → 2/3
+        assert ds.total_fields == 3
+        assert ds.matching_fields == 2
+        assert any("y" in m for m in ds.mismatches)
+
+    def test_nested_model_all_none_source(self) -> None:
+        """Nested model with all-None source fields contributes zero to total."""
+
+        class _Inner(BaseModel):
+            x: str | None = None
+
+        class _Outer(BaseModel):
+            inner: _Inner | None = None
+            top: str | None = None
+
+        src = _Outer(inner=_Inner(), top="c")  # inner.x is None
+        tgt = _Outer(inner=_Inner(x="a"), top="c")
+        ds = _score_domain("outer", src, tgt)
+        # Only top is non-None in source; inner.x is None → skipped
+        assert ds.total_fields == 1
+        assert ds.matching_fields == 1
+        assert ds.score == 1.0
 
 
 # ---------------------------------------------------------------------------

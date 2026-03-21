@@ -355,6 +355,7 @@ class Validator:
         if not ip:
             raise VMError("Cannot SCP scan result — VM has no IP")
 
+        local_path: Path | None = None
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             local_path = Path(tmp.name)
 
@@ -384,4 +385,5 @@ class Validator:
             except Exception as exc:
                 raise VMError(f"Failed to parse VM scan result: {exc}") from exc
         finally:
-            local_path.unlink(missing_ok=True)
+            if local_path is not None:
+                local_path.unlink(missing_ok=True)
