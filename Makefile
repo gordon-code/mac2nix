@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: install lint format typecheck test test-quick clean all prek-install prek
+.PHONY: install lint format typecheck test test-integration test-quick clean all prek-install prek
 
 install:
 	uv sync
@@ -17,6 +17,9 @@ typecheck:
 
 test:
 	uv run pytest
+
+test-integration:
+	uv run pytest -m integration --tb=long
 
 test-quick:
 	uv run pytest -x --no-header -q

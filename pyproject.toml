@@ -63,7 +63,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**/*.py" = ["S101", "S105", "S108", "SLF001"]  # assert + test data + private access OK in tests
+"**/tests/**/*.py" = ["S101", "S105", "S106", "S107", "S108", "SLF001", "ARG001"]  # assert + test data + credentials + private access + unused mock args OK in tests
 
 [tool.ruff.lint.isort]
 known-first-party = ["mac2nix"]
@@ -82,6 +82,10 @@ python_functions = "test_*"
 addopts = [
     "--strict-markers",
     "--tb=short",
+    "-m", "not integration",
+]
+markers = [
+    "integration: real VM tests — require tart + sshpass + base VM image",
 ]
 cache_dir = ".cache/pytest"
 
