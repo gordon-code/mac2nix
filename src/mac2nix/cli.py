@@ -102,6 +102,16 @@ def scan(output: Path | None, selected_scanners: tuple[str, ...]) -> None:
         click.echo(json_output)
 
 
+def _vm_options(f: click.decorators.FC) -> click.decorators.FC:
+    """Shared CLI options for Tart VM commands (--base-vm, --vm-user, --vm-password)."""
+    # Applied in reverse order — Click decorators are bottom-up.
+    return click.option("--base-vm", default="base-macos", show_default=True, help="Base Tart VM name.")(
+        click.option("--vm-user", default="admin", show_default=True, help="SSH username inside the VM.")(
+            click.option("--vm-password", default="admin", show_default=False, help="SSH password inside the VM.")(f)
+        )
+    )
+
+
 @main.command()
 def generate() -> None:
     """Generate nix-darwin configuration from a scan snapshot."""
@@ -121,9 +131,7 @@ def generate() -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Source SystemState JSON produced by 'mac2nix scan'.",
 )
-@click.option("--base-vm", default="base-macos", show_default=True, help="Base Tart VM name.")
-@click.option("--vm-user", default="admin", show_default=True, help="SSH username inside the VM.")
-@click.option("--vm-password", default="admin", show_default=False, help="SSH password inside the VM.")
+@_vm_options
 def validate(
     flake_path: Path,
     scan_file: Path,
@@ -181,9 +189,7 @@ def diff() -> None:
     type=click.Choice(["brew", "cask"]),
     help="Package manager type.",
 )
-@click.option("--base-vm", default="base-macos", show_default=True, help="Base Tart VM name.")
-@click.option("--vm-user", default="admin", show_default=True, help="SSH username inside the VM.")
-@click.option("--vm-password", default="admin", show_default=False, help="SSH password inside the VM.")
+@_vm_options
 @click.option(
     "--output",
     "-o",

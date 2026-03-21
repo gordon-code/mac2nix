@@ -5,14 +5,14 @@ Run them explicitly via ``make test-integration`` or ``uv run pytest -m integrat
 
 The base VM image is controlled by the ``MAC2NIX_BASE_VM`` environment variable
 (default: ``macos-sequoia-base``).  The CI workflow pulls the image before running.
+
+The ``shared_vm`` fixture is provided by ``tests/vm/conftest.py`` and creates a
+single VM clone shared across the session for non-lifecycle tests.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
-import shutil
-import subprocess
 import uuid
 
 import pytest
@@ -20,34 +20,11 @@ import pytest
 from mac2nix.vm.comparator import FileSystemComparator
 from mac2nix.vm.manager import TartVMManager
 
+# Re-import from conftest for use in self-contained lifecycle tests.
+# The shared_vm fixture is auto-discovered by pytest from conftest.py.
+from .conftest import BASE_VM, VM_PASSWORD, VM_USER, skip_missing_deps
+
 pytestmark = pytest.mark.integration
-
-BASE_VM = os.environ.get("MAC2NIX_BASE_VM", "macos-sequoia-base")
-VM_USER = os.environ.get("MAC2NIX_VM_USER", "admin")
-VM_PASSWORD = os.environ.get("MAC2NIX_VM_PASSWORD", "admin")
-
-
-def _can_run_integration() -> bool:
-    """Check that tart, sshpass, and the base VM image are all available."""
-    if shutil.which("tart") is None or shutil.which("sshpass") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["tart", "list"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return result.returncode == 0 and BASE_VM in result.stdout
-
-
-_skip_missing_deps = pytest.mark.skipif(
-    not _can_run_integration(),
-    reason=f"requires tart, sshpass, and base VM image {BASE_VM!r}",
-)
 
 
 def _clone_name(label: str) -> str:
@@ -55,11 +32,11 @@ def _clone_name(label: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# VM lifecycle
+# VM lifecycle (self-contained — tests the full clone/start/stop/delete cycle)
 # ---------------------------------------------------------------------------
 
 
-@_skip_missing_deps
+@skip_missing_deps
 class TestVMLifecycle:
     """Clone, start, SSH exec, stop, delete — end to end."""
 
@@ -75,28 +52,25 @@ class TestVMLifecycle:
         # macOS version string like "15.3.1"
         assert "." in stdout.strip()
 
-    def test_exec_whoami(self) -> None:
+
+# ---------------------------------------------------------------------------
+# Tests using the shared session-scoped VM (no lifecycle overhead per test)
+# ---------------------------------------------------------------------------
+
+
+@skip_missing_deps
+class TestSharedVM:
+    """Tests that reuse a single VM clone across the session."""
+
+    def test_exec_whoami(self, shared_vm: TartVMManager) -> None:
         async def _run() -> tuple[bool, str, str]:
-            async with TartVMManager(BASE_VM, VM_USER, VM_PASSWORD) as vm:
-                await vm.clone(_clone_name("whoami"))
-                await vm.start()
-                return await vm.exec_command(["whoami"])
+            return await shared_vm.exec_command(["whoami"])
 
         success, stdout, stderr = asyncio.run(_run())
         assert success, f"whoami failed: {stderr}"
         assert stdout.strip() == VM_USER
 
-
-# ---------------------------------------------------------------------------
-# Filesystem comparator
-# ---------------------------------------------------------------------------
-
-
-@_skip_missing_deps
-class TestFileSystemComparatorIntegration:
-    """Snapshot, create a file, snapshot again, verify diff picks it up."""
-
-    def test_snapshot_and_diff_detects_new_file(self) -> None:
+    def test_snapshot_and_diff_detects_new_file(self, shared_vm: TartVMManager) -> None:
         test_id = uuid.uuid4().hex[:8]
         # Dedicated scan directory (inside /tmp but separate from snapshot files)
         scan_dir = f"/tmp/mac2nix-scan-{test_id}"
@@ -105,29 +79,25 @@ class TestFileSystemComparatorIntegration:
         marker_name = f"marker-{test_id}.txt"
 
         async def _run() -> list[str]:
-            async with TartVMManager(BASE_VM, VM_USER, VM_PASSWORD) as vm:
-                await vm.clone(_clone_name("comparator"))
-                await vm.start()
+            # Create the scan directory
+            ok, _, err = await shared_vm.exec_command(["mkdir", "-p", scan_dir])
+            assert ok, f"mkdir failed: {err}"
 
-                # Create the scan directory
-                ok, _, err = await vm.exec_command(["mkdir", "-p", scan_dir])
-                assert ok, f"mkdir failed: {err}"
+            comp = FileSystemComparator(shared_vm, scan_root=scan_dir, exclude_dirs=[])
 
-                comp = FileSystemComparator(vm, scan_root=scan_dir, exclude_dirs=[])
+            # Before snapshot (empty directory)
+            await comp.snapshot(before_path)
 
-                # Before snapshot (empty directory)
-                await comp.snapshot(before_path)
+            # Create a marker file inside the scan directory
+            ok, _, err = await shared_vm.exec_command(
+                ["bash", "-c", f"echo integration-test > {scan_dir}/{marker_name}"],
+            )
+            assert ok, f"Failed to create marker file: {err}"
 
-                # Create a marker file inside the scan directory
-                ok, _, err = await vm.exec_command(
-                    ["bash", "-c", f"echo integration-test > {scan_dir}/{marker_name}"],
-                )
-                assert ok, f"Failed to create marker file: {err}"
+            # After snapshot
+            await comp.snapshot(after_path)
 
-                # After snapshot
-                await comp.snapshot(after_path)
-
-                return await comp.get_created_files(before_path, after_path)
+            return await comp.get_created_files(before_path, after_path)
 
         created = asyncio.run(_run())
         assert any(marker_name in f for f in created), (
