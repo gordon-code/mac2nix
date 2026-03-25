@@ -3,14 +3,14 @@ name = "mac2nix"
 version = "0.1.0"
 description = "Generate nix-darwin configurations from macOS system scans"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = "==3.14.3"
 license = "MIT"
 dependencies = [
-    "click>=8.1",
-    "pydantic>=2.0",
-    "jinja2>=3.1",
-    "pyyaml>=6.0",
-    "rich>=13.0",
+    "click==8.3.1",
+    "pydantic==2.12.5",
+    "jinja2==3.1.6",
+    "pyyaml==6.0.3",
+    "rich==14.3.3",
 ]
 
 [project.scripts]
