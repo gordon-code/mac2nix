@@ -1,4 +1,4 @@
-"""Package managers scanner — detects MacPorts and Conda/Mamba."""
+"""Package managers scanner — detects MacPorts, Conda/Mamba, and language ecosystem managers."""
 
 from __future__ import annotations
 
@@ -9,12 +9,18 @@ import shutil
 from pathlib import Path
 
 from mac2nix.models.package_managers import (
+    CargoState,
     CondaEnvironment,
     CondaPackage,
     CondaState,
+    GemState,
+    GoState,
+    LanguagePackage,
     MacPortsPackage,
     MacPortsState,
+    NpmGlobalState,
     PackageManagersResult,
+    PipxState,
 )
 from mac2nix.scanners._utils import run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
@@ -35,6 +41,11 @@ class PackageManagersScanner(BaseScannerPlugin):
         return PackageManagersResult(
             macports=self._detect_macports(),
             conda=self._detect_conda(),
+            pipx=self._detect_pipx(),
+            cargo=self._detect_cargo(),
+            npm_global=self._detect_npm_global(),
+            go=self._detect_go(),
+            gem=self._detect_gem(),
         )
 
     def _detect_macports(self) -> MacPortsState:
@@ -214,5 +225,215 @@ class PackageManagersScanner(BaseScannerPlugin):
                     channel=entry.get("channel"),
                 )
             )
+
+        return packages
+
+    # --- Language ecosystem package managers ---
+
+    def _detect_pipx(self) -> PipxState:
+        if shutil.which("pipx") is None:
+            return PipxState(present=False)
+
+        version: str | None = None
+        result = run_command(["pipx", "--version"])
+        if result is not None and result.returncode == 0:
+            version = result.stdout.strip() or None
+
+        packages = self._get_pipx_packages()
+        return PipxState(present=True, version=version, packages=packages)
+
+    @staticmethod
+    def _get_pipx_packages() -> list[LanguagePackage]:
+        result = run_command(["pipx", "list", "--json"], timeout=15)
+        if result is None or result.returncode != 0:
+            return []
+        try:
+            data = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+        venvs = data.get("venvs", {})
+        if not isinstance(venvs, dict):
+            return []
+
+        packages: list[LanguagePackage] = []
+        for _venv_name, venv_data in sorted(venvs.items()):
+            meta = venv_data.get("metadata", {}).get("main_package", {})
+            name = meta.get("package")
+            if not name:
+                continue
+            version = meta.get("package_version")
+            apps = sorted(meta.get("apps", []))
+            packages.append(LanguagePackage(name=name, version=version, binaries=apps))
+
+        return packages
+
+    def _detect_cargo(self) -> CargoState:
+        if shutil.which("cargo") is None:
+            return CargoState(present=False)
+
+        version: str | None = None
+        result = run_command(["cargo", "--version"])
+        if result is not None and result.returncode == 0:
+            match = re.search(r"(\d+\.\d+[\.\d]*)", result.stdout)
+            if match:
+                version = match.group(1)
+
+        packages = self._get_cargo_packages()
+        return CargoState(present=True, version=version, packages=packages)
+
+    @staticmethod
+    def _get_cargo_packages() -> list[LanguagePackage]:
+        result = run_command(["cargo", "install", "--list"], timeout=15)
+        if result is None or result.returncode != 0:
+            return []
+
+        packages: list[LanguagePackage] = []
+        current_name: str | None = None
+        current_version: str | None = None
+        current_bins: list[str] = []
+
+        for line in result.stdout.splitlines():
+            if not line.startswith(" "):
+                if current_name:
+                    packages.append(
+                        LanguagePackage(
+                            name=current_name,
+                            version=current_version,
+                            binaries=sorted(current_bins),
+                        )
+                    )
+                match = re.match(r"(\S+)\s+v(\S+):", line)
+                if match:
+                    current_name = match.group(1)
+                    current_version = match.group(2)
+                    current_bins = []
+                else:
+                    current_name = None
+            elif current_name:
+                binary = line.strip()
+                if binary:
+                    current_bins.append(binary)
+
+        if current_name:
+            packages.append(
+                LanguagePackage(
+                    name=current_name,
+                    version=current_version,
+                    binaries=sorted(current_bins),
+                )
+            )
+
+        return packages
+
+    def _detect_npm_global(self) -> NpmGlobalState:
+        if shutil.which("npm") is None:
+            return NpmGlobalState(present=False)
+
+        version: str | None = None
+        result = run_command(["npm", "--version"])
+        if result is not None and result.returncode == 0:
+            version = result.stdout.strip() or None
+
+        packages = self._get_npm_global_packages()
+        return NpmGlobalState(present=True, version=version, packages=packages)
+
+    @staticmethod
+    def _get_npm_global_packages() -> list[LanguagePackage]:
+        result = run_command(["npm", "list", "-g", "--json", "--depth=0"], timeout=15)
+        if result is None or result.returncode != 0:
+            return []
+        try:
+            data = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+        deps = data.get("dependencies", {})
+        if not isinstance(deps, dict):
+            return []
+
+        packages: list[LanguagePackage] = []
+        for name in sorted(deps):
+            if name == "npm":
+                continue
+            info = deps[name]
+            version = info.get("version") if isinstance(info, dict) else None
+            packages.append(LanguagePackage(name=name, version=version))
+
+        return packages
+
+    def _detect_go(self) -> GoState:
+        if shutil.which("go") is None:
+            return GoState(present=False)
+
+        version: str | None = None
+        result = run_command(["go", "version"])
+        if result is not None and result.returncode == 0:
+            match = re.search(r"go(\d+\.\d+[\.\d]*)", result.stdout)
+            if match:
+                version = match.group(1)
+
+        packages = self._get_go_packages()
+        return GoState(present=True, version=version, packages=packages)
+
+    @staticmethod
+    def _get_go_packages() -> list[LanguagePackage]:
+        go_bin = Path.home() / "go" / "bin"
+        if not go_bin.is_dir():
+            return []
+
+        packages: list[LanguagePackage] = []
+        for binary in sorted(go_bin.iterdir()):
+            if not binary.is_file():
+                continue
+            result = run_command(["go", "version", "-m", str(binary)], timeout=5)
+            if result is None or result.returncode != 0:
+                continue
+            mod_path: str | None = None
+            mod_version: str | None = None
+            for line in result.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 3 and parts[0] == "mod":
+                    mod_path = parts[1]
+                    mod_version = parts[2].lstrip("v")
+                    break
+            if mod_path:
+                packages.append(
+                    LanguagePackage(
+                        name=mod_path,
+                        version=mod_version,
+                        binaries=[binary.name],
+                    )
+                )
+
+        return packages
+
+    def _detect_gem(self) -> GemState:
+        if shutil.which("gem") is None:
+            return GemState(present=False)
+
+        version: str | None = None
+        result = run_command(["gem", "--version"])
+        if result is not None and result.returncode == 0:
+            version = result.stdout.strip() or None
+
+        packages = self._get_gem_packages()
+        return GemState(present=True, version=version, packages=packages)
+
+    @staticmethod
+    def _get_gem_packages() -> list[LanguagePackage]:
+        result = run_command(["gem", "list", "--no-verbose"], timeout=15)
+        if result is None or result.returncode != 0:
+            return []
+
+        packages: list[LanguagePackage] = []
+        for line in result.stdout.splitlines():
+            match = re.match(r"(\S+)\s+\((.+)\)", line.strip())
+            if match:
+                name = match.group(1)
+                version_str = match.group(2).split(",")[0].strip()
+                if version_str.startswith("default:"):
+                    version_str = version_str.split(":", 1)[1].strip()
+                packages.append(LanguagePackage(name=name, version=version_str))
 
         return packages
