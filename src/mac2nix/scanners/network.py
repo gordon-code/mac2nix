@@ -265,7 +265,7 @@ class NetworkScanner(BaseScannerPlugin):
             if not stripped or stripped.startswith("An asterisk"):
                 continue
             if stripped.startswith("*"):
-                stripped = stripped.lstrip("*").strip()
+                stripped = stripped.removeprefix("*").strip()
             if stripped:
                 services.append(stripped)
         return services
