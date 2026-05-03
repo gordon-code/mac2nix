@@ -259,6 +259,8 @@ class PackageManagersScanner(BaseScannerPlugin):
 
         packages: list[LanguagePackage] = []
         for _venv_name, venv_data in sorted(venvs.items()):
+            if not isinstance(venv_data, dict):
+                continue
             meta = venv_data.get("metadata", {}).get("main_package", {})
             name = meta.get("package")
             if not name:
@@ -304,7 +306,7 @@ class PackageManagersScanner(BaseScannerPlugin):
                             binaries=sorted(current_bins),
                         )
                     )
-                match = re.match(r"(\S+)\s+v(\S+):", line)
+                match = re.match(r"(\S+)\s+v(\S+?)(?:\s+\(.*\))?:", line)
                 if match:
                     current_name = match.group(1)
                     current_version = match.group(2)
@@ -401,12 +403,16 @@ class PackageManagersScanner(BaseScannerPlugin):
                     )
             return None
 
-        packages: list[LanguagePackage] = []
+        merged: dict[str, LanguagePackage] = {}
         with ThreadPoolExecutor(max_workers=min(8, len(binaries))) as pool:
             for pkg in pool.map(_inspect, binaries):
-                if pkg is not None:
-                    packages.append(pkg)
-        return packages
+                if pkg is None:
+                    continue
+                if pkg.name in merged:
+                    merged[pkg.name].binaries = sorted({*merged[pkg.name].binaries, *pkg.binaries})
+                else:
+                    merged[pkg.name] = pkg
+        return sorted(merged.values(), key=lambda p: p.name)
 
     def _detect_gem(self) -> GemState:
         if shutil.which("gem") is None:

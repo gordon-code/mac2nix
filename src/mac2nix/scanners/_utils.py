@@ -417,7 +417,9 @@ def _parse_xml_value(element: ElementTree.Element) -> Any:
     # string, date, data → text; integer/real → parsed; unknown → text
     converters: dict[str, Any] = {"integer": int, "real": float}
     converter = converters.get(tag)
-    return converter(text) if converter else text
+    if converter and text:
+        return converter(text)
+    return text
 
 
 def read_launchd_plists() -> list[tuple[Path, str, dict[str, Any]]]:
