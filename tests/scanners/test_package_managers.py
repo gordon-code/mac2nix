@@ -502,6 +502,23 @@ class TestPipxDetection:
         assert result.present is True
         assert result.packages == []
 
+    def test_venvs_not_dict(self, cmd_result) -> None:
+        def side_effect(cmd, **_kwargs):
+            if cmd == ["pipx", "--version"]:
+                return cmd_result("1.6.0\n")
+            if cmd == ["pipx", "list", "--json"]:
+                return cmd_result(json.dumps({"venvs": []}))
+            return None
+
+        with (
+            patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/local/bin/pipx"),
+            patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+        ):
+            result = PackageManagersScanner()._detect_pipx()
+
+        assert result.present is True
+        assert result.packages == []
+
 
 class TestCargoDetection:
     def test_not_present(self) -> None:
@@ -531,6 +548,9 @@ class TestCargoDetection:
         ast = next(p for p in result.packages if p.name == "ast-grep")
         assert ast.version == "0.40.5"
         assert ast.binaries == ["ast-grep", "sg"]
+        audit = next(p for p in result.packages if p.name == "cargo-audit")
+        assert audit.version == "0.22.0"
+        assert audit.binaries == ["cargo-audit"]
 
     def test_empty_list(self, cmd_result) -> None:
         def side_effect(cmd, **_kwargs):
@@ -586,6 +606,23 @@ class TestNpmGlobalDetection:
         assert not any(p.name == "npm" for p in result.packages)
         ts = next(p for p in result.packages if p.name == "typescript")
         assert ts.version == "5.9.3"
+
+    def test_list_command_fails(self, cmd_result) -> None:
+        def side_effect(cmd, **_kwargs):
+            if cmd == ["npm", "--version"]:
+                return cmd_result("11.12.1\n")
+            if "list" in cmd:
+                return cmd_result("ERR!", returncode=1)
+            return None
+
+        with (
+            patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/local/bin/npm"),
+            patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+        ):
+            result = PackageManagersScanner()._detect_npm_global()
+
+        assert result.present is True
+        assert result.packages == []
 
 
 class TestGoDetection:
@@ -643,6 +680,54 @@ class TestGoDetection:
         assert result.present is True
         assert result.packages == []
 
+    def test_binary_fails_version_check(self, cmd_result, tmp_path: Path) -> None:
+        go_bin = tmp_path / "go" / "bin"
+        go_bin.mkdir(parents=True)
+        (go_bin / "gopls").write_text("binary")
+        (go_bin / "bad-tool").write_text("not-go")
+
+        go_version_output = "/tmp/go/bin/gopls: go1.23.0\n\tmod\tgolang.org/x/tools/gopls\tv0.17.1\t(none)\n"
+
+        def side_effect(cmd, **_kwargs):
+            if cmd == ["go", "version"]:
+                return cmd_result("go version go1.23.0 darwin/arm64\n")
+            if cmd[0] == "go" and "-m" in cmd and "bad-tool" in cmd[-1]:
+                return cmd_result("", returncode=1)
+            if cmd[0] == "go" and "-m" in cmd:
+                return cmd_result(go_version_output)
+            return None
+
+        with (
+            patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/local/go/bin/go"),
+            patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+            patch(f"{_SCANNER_MODULE}.Path.home", return_value=tmp_path),
+        ):
+            result = PackageManagersScanner()._detect_go()
+
+        assert len(result.packages) == 1
+        assert result.packages[0].name == "golang.org/x/tools/gopls"
+
+    def test_binary_no_mod_line(self, cmd_result, tmp_path: Path) -> None:
+        go_bin = tmp_path / "go" / "bin"
+        go_bin.mkdir(parents=True)
+        (go_bin / "old-tool").write_text("binary")
+
+        def side_effect(cmd, **_kwargs):
+            if cmd == ["go", "version"]:
+                return cmd_result("go version go1.23.0 darwin/arm64\n")
+            if cmd[0] == "go" and "-m" in cmd:
+                return cmd_result("/tmp/go/bin/old-tool: go1.23.0\n\tpath\tcmd/old-tool\n")
+            return None
+
+        with (
+            patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/local/go/bin/go"),
+            patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+            patch(f"{_SCANNER_MODULE}.Path.home", return_value=tmp_path),
+        ):
+            result = PackageManagersScanner()._detect_go()
+
+        assert result.packages == []
+
 
 class TestGemDetection:
     def test_not_present(self) -> None:
@@ -690,3 +775,22 @@ class TestGemDetection:
 
         assert result.present is True
         assert result.packages == []
+
+    def test_default_prefix_version(self, cmd_result) -> None:
+        gem_output = "bundler (default: 2.4.22)\nrake (13.2.1)\n"
+
+        def side_effect(cmd, **_kwargs):
+            if cmd == ["gem", "--version"]:
+                return cmd_result("3.5.11\n")
+            if "list" in cmd:
+                return cmd_result(gem_output)
+            return None
+
+        with (
+            patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/bin/gem"),
+            patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+        ):
+            result = PackageManagersScanner()._detect_gem()
+
+        bundler = next(p for p in result.packages if p.name == "bundler")
+        assert bundler.version == "2.4.22"

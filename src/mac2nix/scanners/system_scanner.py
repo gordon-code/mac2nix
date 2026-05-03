@@ -38,7 +38,7 @@ class SystemScanner(BaseScannerPlugin):
 
     def scan(self) -> SystemConfig:
         computer_name = self._get_computer_name()
-        hostname = self._get_hostname()
+        hostname = self._get_hostname(computer_name)
         local_hostname, dns_hostname = self._get_additional_hostnames()
         timezone = self._get_timezone()
         locale = self._get_locale()
@@ -99,11 +99,9 @@ class SystemScanner(BaseScannerPlugin):
             return name or None
         return None
 
-    def _get_hostname(self) -> str:
-        result = run_command(["scutil", "--get", "ComputerName"])
-        if result is not None and result.returncode == 0:
-            return result.stdout.strip()
-        # Fallback to LocalHostName
+    def _get_hostname(self, computer_name: str | None = None) -> str:
+        if computer_name:
+            return computer_name
         result = run_command(["scutil", "--get", "LocalHostName"])
         if result is not None and result.returncode == 0:
             return result.stdout.strip()

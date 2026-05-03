@@ -1,4 +1,4 @@
-"""Package managers scanner — detects MacPorts, Conda/Mamba, and language ecosystem managers."""
+"""Package managers scanner — detects MacPorts, Conda/Mamba, pipx, Cargo, npm global, Go, and gem."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from mac2nix.models.package_managers import (
@@ -382,30 +383,29 @@ class PackageManagersScanner(BaseScannerPlugin):
         if not go_bin.is_dir():
             return []
 
-        packages: list[LanguagePackage] = []
-        for binary in sorted(go_bin.iterdir()):
-            if not binary.is_file():
-                continue
+        binaries = sorted(b for b in go_bin.iterdir() if b.is_file())
+        if not binaries:
+            return []
+
+        def _inspect(binary: Path) -> LanguagePackage | None:
             result = run_command(["go", "version", "-m", str(binary)], timeout=5)
             if result is None or result.returncode != 0:
-                continue
-            mod_path: str | None = None
-            mod_version: str | None = None
+                return None
             for line in result.stdout.splitlines():
                 parts = line.strip().split()
                 if len(parts) >= 3 and parts[0] == "mod":
-                    mod_path = parts[1]
-                    mod_version = parts[2].lstrip("v")
-                    break
-            if mod_path:
-                packages.append(
-                    LanguagePackage(
-                        name=mod_path,
-                        version=mod_version,
+                    return LanguagePackage(
+                        name=parts[1],
+                        version=parts[2].lstrip("v"),
                         binaries=[binary.name],
                     )
-                )
+            return None
 
+        packages: list[LanguagePackage] = []
+        with ThreadPoolExecutor(max_workers=min(8, len(binaries))) as pool:
+            for pkg in pool.map(_inspect, binaries):
+                if pkg is not None:
+                    packages.append(pkg)
         return packages
 
     def _detect_gem(self) -> GemState:
