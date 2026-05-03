@@ -100,6 +100,19 @@ class TestReadPlistSafe:
 
         assert result is None
 
+    def test_read_plist_safe_invalid_falls_back_to_plutil(self, tmp_path: Path) -> None:
+        plist_file = tmp_path / "nextstep.plist"
+        plist_file.write_bytes(plistlib.dumps({"key": "recovered"}))
+
+        with patch(
+            "mac2nix.scanners._utils.plistlib.load",
+            side_effect=plistlib.InvalidFileException("Invalid file"),
+        ):
+            result = read_plist_safe(plist_file)
+
+        assert result is not None
+        assert result["key"] == "recovered"
+
     def test_read_plist_safe_corrupt_datetime_falls_back_to_plutil(self, tmp_path: Path) -> None:
         plist_file = tmp_path / "corrupt_date.plist"
         plist_file.write_bytes(plistlib.dumps({"key": "value"}))

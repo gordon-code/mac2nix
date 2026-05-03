@@ -348,15 +348,12 @@ def read_plist_safe(path: Path) -> dict[str, Any] | list[Any] | None:
         else:
             logger.warning("Permission denied reading plist: %s", path)
         return None
-    except plistlib.InvalidFileException:
-        logger.warning("Invalid plist file: %s", path)
-        return None
-    except (ValueError, OverflowError):
-        # plistlib can't handle dates like year 0 (Apple's "no date" sentinel).
-        # Fall back to plutil XML conversion which preserves dates as strings.
+    except (plistlib.InvalidFileException, ValueError, OverflowError):
+        # plistlib can't handle NeXTStep-format plists, some newer binary plist
+        # variants, or dates like year 0.  Fall back to plutil XML conversion.
         data = _read_plist_via_plutil(path)
         if data is None:
-            logger.warning("Plist contains unrepresentable data: %s", path)
+            logger.debug("Skipping unreadable plist: %s", path)
             return None
     except OSError as exc:
         logger.warning("Failed to read plist %s: %s", path, exc)
