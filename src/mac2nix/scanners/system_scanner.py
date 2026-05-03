@@ -37,6 +37,7 @@ class SystemScanner(BaseScannerPlugin):
         return shutil.which("scutil") is not None
 
     def scan(self) -> SystemConfig:
+        computer_name = self._get_computer_name()
         hostname = self._get_hostname()
         local_hostname, dns_hostname = self._get_additional_hostnames()
         timezone = self._get_timezone()
@@ -60,6 +61,7 @@ class SystemScanner(BaseScannerPlugin):
 
         return SystemConfig(
             hostname=hostname,
+            computer_name=computer_name,
             local_hostname=local_hostname,
             dns_hostname=dns_hostname,
             timezone=timezone,
@@ -89,6 +91,13 @@ class SystemScanner(BaseScannerPlugin):
             icloud=icloud,
             mdm_enrolled=mdm_enrolled,
         )
+
+    def _get_computer_name(self) -> str | None:
+        result = run_command(["scutil", "--get", "ComputerName"])
+        if result is not None and result.returncode == 0:
+            name = result.stdout.strip()
+            return name or None
+        return None
 
     def _get_hostname(self) -> str:
         result = run_command(["scutil", "--get", "ComputerName"])
