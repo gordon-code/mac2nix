@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -344,7 +345,9 @@ class PackageManagersScanner(BaseScannerPlugin):
     @staticmethod
     def _get_npm_global_packages() -> list[LanguagePackage]:
         result = run_command(["npm", "list", "-g", "--json", "--depth=0"], timeout=15)
-        if result is None or result.returncode != 0:
+        if result is None:
+            return []
+        if result.returncode != 0 and not result.stdout.strip():
             return []
         try:
             data = json.loads(result.stdout)
@@ -381,7 +384,12 @@ class PackageManagersScanner(BaseScannerPlugin):
 
     @staticmethod
     def _get_go_packages() -> list[LanguagePackage]:
-        go_bin = Path.home() / "go" / "bin"
+        gobin = os.environ.get("GOBIN")
+        if gobin:
+            go_bin = Path(gobin)
+        else:
+            gopath = os.environ.get("GOPATH")
+            go_bin = Path(gopath) / "bin" if gopath else Path.home() / "go" / "bin"
         if not go_bin.is_dir():
             return []
 

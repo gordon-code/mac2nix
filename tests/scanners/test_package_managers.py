@@ -552,6 +552,33 @@ class TestCargoDetection:
         assert audit.version == "0.22.0"
         assert audit.binaries == ["cargo-audit"]
 
+    def test_path_installed_crate(self, cmd_result) -> None:
+        cargo_output = (
+            "my-tool v0.1.0 (/Users/me/projects/my-tool):\n"
+            "    my-tool\n"
+            "git-crate v0.3.0 (https://github.com/user/repo#abc1234):\n"
+            "    git-crate\n"
+        )
+
+        def side_effect(cmd, **_kwargs):
+            if cmd == ["cargo", "--version"]:
+                return cmd_result("cargo 1.82.0\n")
+            if cmd[:3] == ["cargo", "install", "--list"]:
+                return cmd_result(cargo_output)
+            return None
+
+        with (
+            patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/bin/cargo"),
+            patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+        ):
+            result = PackageManagersScanner()._detect_cargo()
+
+        assert len(result.packages) == 2
+        my_tool = next(p for p in result.packages if p.name == "my-tool")
+        assert my_tool.version == "0.1.0"
+        git_crate = next(p for p in result.packages if p.name == "git-crate")
+        assert git_crate.version == "0.3.0"
+
     def test_empty_list(self, cmd_result) -> None:
         def side_effect(cmd, **_kwargs):
             if cmd == ["cargo", "--version"]:
@@ -727,6 +754,32 @@ class TestGoDetection:
             result = PackageManagersScanner()._detect_go()
 
         assert result.packages == []
+
+    def test_multi_binary_same_module_merged(self, cmd_result, tmp_path: Path) -> None:
+        go_bin = tmp_path / "go" / "bin"
+        go_bin.mkdir(parents=True)
+        (go_bin / "goimports").write_text("binary")
+        (go_bin / "gorename").write_text("binary")
+
+        def side_effect(cmd, **_kwargs):
+            if cmd == ["go", "version"]:
+                return cmd_result("go version go1.23.0 darwin/arm64\n")
+            if cmd[0] == "go" and "-m" in cmd:
+                return cmd_result(f"{cmd[-1]}: go1.23.0\n\tmod\tgolang.org/x/tools\tv0.28.0\t(none)\n")
+            return None
+
+        with (
+            patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/local/go/bin/go"),
+            patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+            patch(f"{_SCANNER_MODULE}.Path.home", return_value=tmp_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            result = PackageManagersScanner()._detect_go()
+
+        assert len(result.packages) == 1
+        assert result.packages[0].name == "golang.org/x/tools"
+        assert result.packages[0].version == "0.28.0"
+        assert sorted(result.packages[0].binaries) == ["goimports", "gorename"]
 
 
 class TestGemDetection:
