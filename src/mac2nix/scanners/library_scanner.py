@@ -28,6 +28,7 @@ from mac2nix.scanners._utils import (
     hash_file,
     parallel_walk_dirs,
     read_plist_safe,
+    redact_sensitive_keys,
     run_command,
 )
 from mac2nix.scanners.base import BaseScannerPlugin, register
@@ -83,8 +84,6 @@ _TRANSIENT_DIRS = frozenset(
     }
 )
 
-_SENSITIVE_KEY_PATTERNS = {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"}
-
 # Redacts values in key=value / key: value lines where the key contains a sensitive word.
 # Uses separator-prefixed compound patterns ([_.-]key, [_.-]token, etc.) to avoid false
 # positives on words like "monkey", "turkey", "keyboard". Standalone patterns (password,
@@ -114,19 +113,6 @@ _BUNDLE_EXTENSIONS = frozenset(
         ".kext",
     }
 )
-
-
-def _redact_sensitive_keys(data: dict[str, Any]) -> None:
-    """Recursively redact sensitive keys from a plist dict."""
-    for key in list(data.keys()):
-        if any(p in key.upper() for p in _SENSITIVE_KEY_PATTERNS):
-            data[key] = "***REDACTED***"
-        elif isinstance(data[key], dict):
-            _redact_sensitive_keys(data[key])
-        elif isinstance(data[key], list):
-            for item in data[key]:
-                if isinstance(item, dict):
-                    _redact_sensitive_keys(item)
 
 
 @register("library")
@@ -393,7 +379,7 @@ class LibraryScanner(BaseScannerPlugin):
             raw_plist = read_plist_safe(filepath)
             if isinstance(raw_plist, dict):
                 plist_content = raw_plist
-                _redact_sensitive_keys(plist_content)
+                redact_sensitive_keys(plist_content)
             content_hash = hash_file(filepath)
             strategy = "plist_capture" if plist_content else "hash_only"
         elif suffix in {".txt", ".md", ".cfg", ".conf", ".ini", ".yaml", ".yml", ".json", ".xml", ".toml"}:
@@ -508,7 +494,7 @@ class LibraryScanner(BaseScannerPlugin):
         if doc_plist.is_file():
             raw = read_plist_safe(doc_plist)
             if isinstance(raw, dict):
-                _redact_sensitive_keys(raw)
+                redact_sensitive_keys(raw)
                 definition = raw
 
         return WorkflowEntry(

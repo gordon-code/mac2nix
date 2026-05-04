@@ -304,6 +304,37 @@ class TestLaunchAgentsScanner:
         assert entry.raw_plist["EnvironmentVariables"]["API_TOKEN"] == redacted
         assert entry.raw_plist["EnvironmentVariables"]["SAFE"] == "ok"
 
+    def test_raw_plist_nested_sensitive_keys_redacted(self) -> None:
+        plist_path = Path("/Users/test/Library/LaunchAgents/com.test.nested.plist")
+        redacted = "***REDACTED***"
+        plist_data = {
+            "Label": "com.test.nested",
+            "ProgramArguments": ["/usr/bin/curl"],
+            "CustomConfig": {
+                "API_TOKEN": "secret_token_value",
+                "Endpoint": "https://example.com",
+                "Nested": {
+                    "DB_PASSWORD": "hunter2",
+                    "Port": 5432,
+                },
+            },
+        }
+
+        with (
+            patch(
+                "mac2nix.scanners.launch_agents.read_launchd_plists",
+                return_value=[(plist_path, "user", plist_data)],
+            ),
+            patch("mac2nix.scanners.launch_agents.run_command", return_value=None),
+        ):
+            result = LaunchAgentsScanner().scan()
+
+        entry = result.entries[0]
+        assert entry.raw_plist["CustomConfig"]["API_TOKEN"] == redacted
+        assert entry.raw_plist["CustomConfig"]["Endpoint"] == "https://example.com"
+        assert entry.raw_plist["CustomConfig"]["Nested"]["DB_PASSWORD"] == redacted
+        assert entry.raw_plist["CustomConfig"]["Nested"]["Port"] == 5432
+
     def test_raw_plist_is_deep_copy(self) -> None:
         plist_data = {
             "Label": "com.test.copy",

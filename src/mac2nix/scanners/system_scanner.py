@@ -99,12 +99,12 @@ class SystemScanner(BaseScannerPlugin):
             return name or None
         return None
 
-    def _get_hostname(self, computer_name: str | None = None) -> str:
+    def _get_hostname(self, computer_name: str | None) -> str:
         if computer_name:
             return computer_name
         result = run_command(["scutil", "--get", "LocalHostName"])
         if result is not None and result.returncode == 0:
-            return result.stdout.strip()
+            return result.stdout.strip() or "unknown"
         return "unknown"
 
     def _get_timezone(self) -> str | None:

@@ -40,15 +40,24 @@ class PackageManagersScanner(BaseScannerPlugin):
         return "package_managers"
 
     def scan(self) -> PackageManagersResult:
-        return PackageManagersResult(
-            macports=self._detect_macports(),
-            conda=self._detect_conda(),
-            pipx=self._detect_pipx(),
-            cargo=self._detect_cargo(),
-            npm_global=self._detect_npm_global(),
-            go=self._detect_go(),
-            gem=self._detect_gem(),
-        )
+        detectors = {
+            "macports": self._detect_macports,
+            "conda": self._detect_conda,
+            "pipx": self._detect_pipx,
+            "cargo": self._detect_cargo,
+            "npm_global": self._detect_npm_global,
+            "go": self._detect_go,
+            "gem": self._detect_gem,
+        }
+        results: dict[str, object] = {}
+        with ThreadPoolExecutor(max_workers=len(detectors)) as pool:
+            futures = {pool.submit(fn): name for name, fn in detectors.items()}
+            for future, name in futures.items():
+                try:
+                    results[name] = future.result()
+                except Exception:
+                    logger.exception("Detector '%s' failed", name)
+        return PackageManagersResult(**results)  # type: ignore[arg-type]
 
     def _detect_macports(self) -> MacPortsState:
         port_bin = Path("/opt/local/bin/port")
@@ -83,7 +92,6 @@ class PackageManagersScanner(BaseScannerPlugin):
 
         packages: list[MacPortsPackage] = []
         for line in result.stdout.splitlines():
-            # Skip header line
             if not line.startswith(" "):
                 continue
             stripped = line.strip()
@@ -417,7 +425,12 @@ class PackageManagersScanner(BaseScannerPlugin):
                 if pkg is None:
                     continue
                 if pkg.name in merged:
-                    merged[pkg.name].binaries = sorted({*merged[pkg.name].binaries, *pkg.binaries})
+                    existing = merged[pkg.name]
+                    merged[pkg.name] = LanguagePackage(
+                        name=existing.name,
+                        version=existing.version,
+                        binaries=sorted({*existing.binaries, *pkg.binaries}),
+                    )
                 else:
                     merged[pkg.name] = pkg
         return sorted(merged.values(), key=lambda p: p.name)

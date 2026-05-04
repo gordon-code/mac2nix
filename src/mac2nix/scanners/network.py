@@ -211,7 +211,6 @@ class NetworkScanner(BaseScannerPlugin):
             networks = []
             for line in result.stdout.splitlines():
                 stripped = line.strip()
-                # Skip header line
                 if stripped.startswith("Preferred networks"):
                     continue
                 if stripped:
