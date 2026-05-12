@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mac2nix.models.files import ConfigFileType, LibraryResult
+from mac2nix.scanners._utils import redact_sensitive_keys
 from mac2nix.scanners.library_scanner import (
     _COVERED_DIRS,
     _SENSITIVE_VALUE_RE,
     _TRANSIENT_DIRS,
     LibraryScanner,
-    _redact_sensitive_keys,
 )
 
 
@@ -827,7 +827,7 @@ class TestLibraryScanner:
 class TestRedactSensitiveKeys:
     def test_redacts_api_key(self) -> None:
         data = {"API_KEY": "secret123", "name": "test"}
-        _redact_sensitive_keys(data)
+        redact_sensitive_keys(data)
 
         redacted = "***REDACTED***"
         assert data["API_KEY"] == redacted
@@ -835,7 +835,7 @@ class TestRedactSensitiveKeys:
 
     def test_redacts_nested_dict(self) -> None:
         data = {"config": {"DB_PASSWORD": "secret", "host": "localhost"}}
-        _redact_sensitive_keys(data)
+        redact_sensitive_keys(data)
 
         redacted = "***REDACTED***"
         assert data["config"]["DB_PASSWORD"] == redacted
@@ -843,7 +843,7 @@ class TestRedactSensitiveKeys:
 
     def test_redacts_in_list(self) -> None:
         data = {"items": [{"ACCESS_TOKEN": "token123"}, {"normal": "value"}]}
-        _redact_sensitive_keys(data)
+        redact_sensitive_keys(data)
 
         redacted = "***REDACTED***"
         assert data["items"][0]["ACCESS_TOKEN"] == redacted
@@ -851,14 +851,14 @@ class TestRedactSensitiveKeys:
 
     def test_case_insensitive_match(self) -> None:
         data = {"my_auth_header": "Bearer xyz"}
-        _redact_sensitive_keys(data)
+        redact_sensitive_keys(data)
 
         redacted = "***REDACTED***"
         assert data["my_auth_header"] == redacted
 
     def test_no_sensitive_keys(self) -> None:
         data = {"name": "test", "count": 42}
-        _redact_sensitive_keys(data)
+        redact_sensitive_keys(data)
         assert data == {"name": "test", "count": 42}
 
 

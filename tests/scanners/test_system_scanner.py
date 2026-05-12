@@ -54,6 +54,48 @@ class TestSystemScanner:
         assert isinstance(result, SystemConfig)
         assert result.hostname == "unknown"
 
+    def test_hostname_empty_local_hostname_returns_unknown(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["scutil", "--get", "ComputerName"]:
+                return cmd_result("", returncode=1)
+            if cmd == ["scutil", "--get", "LocalHostName"]:
+                return cmd_result("\n")
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner().scan()
+
+        assert isinstance(result, SystemConfig)
+        assert result.hostname == "unknown"
+
+    def test_computer_name(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["scutil", "--get", "ComputerName"]:
+                return cmd_result("Will's MacBook Pro\n")
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner().scan()
+
+        assert result.computer_name == "Will's MacBook Pro"
+
+    def test_computer_name_not_set(self) -> None:
+        with patch("mac2nix.scanners.system_scanner.run_command", return_value=None):
+            result = SystemScanner().scan()
+
+        assert result.computer_name is None
+
+    def test_computer_name_empty_string(self, cmd_result) -> None:
+        def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
+            if cmd == ["scutil", "--get", "ComputerName"]:
+                return cmd_result("")
+            return None
+
+        with patch("mac2nix.scanners.system_scanner.run_command", side_effect=side_effect):
+            result = SystemScanner().scan()
+
+        assert result.computer_name is None
+
     def test_timezone(self, cmd_result) -> None:
         def side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
             if cmd == ["scutil", "--get", "ComputerName"]:

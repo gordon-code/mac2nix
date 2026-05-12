@@ -349,6 +349,44 @@ class TestNetworkScanner:
         assert result.locations == ["Automatic", "Work", "Home"]
         assert result.current_location == "Work"
 
+    def test_known_network_services(self, cmd_result) -> None:
+        services_output = (
+            "An asterisk (*) denotes that a network service is disabled.\nWi-Fi\nThunderbolt Ethernet\n*Bluetooth PAN\n"
+        )
+        responses = {
+            ("networksetup", "-listallhardwareports"): cmd_result(
+                "Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa:bb:cc:dd:ee:ff\n"
+            ),
+            ("ifconfig",): cmd_result("en0: flags=8863<UP>\n\tinet 10.0.0.1 netmask 0xffffff00\n"),
+            ("scutil",): cmd_result(""),
+            ("networksetup", "-listallnetworkservices"): cmd_result(services_output),
+        }
+
+        with patch(
+            "mac2nix.scanners.network.run_command",
+            side_effect=_network_side_effect(responses),
+        ):
+            result = NetworkScanner().scan()
+
+        assert result.known_network_services == ["Wi-Fi", "Thunderbolt Ethernet", "Bluetooth PAN"]
+
+    def test_known_network_services_command_fails(self, cmd_result) -> None:
+        responses = {
+            ("networksetup", "-listallhardwareports"): cmd_result(
+                "Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa:bb:cc:dd:ee:ff\n"
+            ),
+            ("ifconfig",): cmd_result("en0: flags=8863<UP>\n\tinet 10.0.0.1 netmask 0xffffff00\n"),
+            ("scutil",): cmd_result(""),
+        }
+
+        with patch(
+            "mac2nix.scanners.network.run_command",
+            side_effect=_network_side_effect(responses),
+        ):
+            result = NetworkScanner().scan()
+
+        assert result.known_network_services == []
+
     def test_wifi_preferred_networks(self, cmd_result) -> None:
         preferred = "Preferred networks on en0:\n\tHomeNetwork\n\tOfficeWifi\n\tCoffeeShop\n"
         responses = {

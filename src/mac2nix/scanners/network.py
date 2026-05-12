@@ -30,6 +30,7 @@ class NetworkScanner(BaseScannerPlugin):
         proxy_bypass_domains = self._get_proxy_bypass_domains(interfaces)
         wifi_networks = self._get_wifi_networks(interfaces)
         vpn_profiles = self._get_vpn_profiles()
+        known_network_services = self._get_network_services()
         locations, current_location = self._get_locations()
 
         return NetworkConfig(
@@ -40,6 +41,7 @@ class NetworkScanner(BaseScannerPlugin):
             wifi_networks=wifi_networks,
             vpn_profiles=vpn_profiles,
             proxy_bypass_domains=proxy_bypass_domains,
+            known_network_services=known_network_services,
             locations=locations,
             current_location=current_location,
         )
@@ -209,7 +211,6 @@ class NetworkScanner(BaseScannerPlugin):
             networks = []
             for line in result.stdout.splitlines():
                 stripped = line.strip()
-                # Skip header line
                 if stripped.startswith("Preferred networks"):
                     continue
                 if stripped:
@@ -251,6 +252,22 @@ class NetworkScanner(BaseScannerPlugin):
                     )
                 )
         return profiles
+
+    def _get_network_services(self) -> list[str]:
+        """Get all network service names for networking.knownNetworkServices."""
+        result = run_command(["networksetup", "-listallnetworkservices"])
+        if result is None or result.returncode != 0:
+            return []
+        services: list[str] = []
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("An asterisk"):
+                continue
+            if stripped.startswith("*"):
+                stripped = stripped.removeprefix("*").strip()
+            if stripped:
+                services.append(stripped)
+        return services
 
     def _get_locations(self) -> tuple[list[str], str | None]:
         """Get network locations and current location."""
