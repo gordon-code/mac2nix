@@ -93,9 +93,40 @@ _ALF_KEY_ALIASES: dict[str, str] = {
 }
 
 
-def _is_sensitive_key(key: str) -> bool:
-    upper = key.upper()
+def _contains_sensitive_pattern(text: str) -> bool:
+    upper = text.upper()
     return any(pattern in upper for pattern in SENSITIVE_KEY_PATTERNS)
+
+
+def _redact_sensitive_dict_entries(entries: dict[str, str]) -> tuple[dict[str, str], bool]:
+    """Redact dict entries (shell aliases, env vars) whose name or value looks like a secret.
+
+    Credentials routinely appear inline in alias bodies and env var values
+    (e.g. `alias awsprod='AWS_SECRET_ACCESS_KEY=... aws --profile prod'`), so
+    both the key and the value must be checked -- not just the key name.
+    """
+    redacted_any = False
+    result: dict[str, str] = {}
+    for key, value in entries.items():
+        if _contains_sensitive_pattern(key) or _contains_sensitive_pattern(value):
+            result[key] = "***REDACTED***"
+            redacted_any = True
+        else:
+            result[key] = value
+    return result, redacted_any
+
+
+def _redact_sensitive_list_entries(entries: list[str]) -> tuple[list[str], bool]:
+    """Redact list entries (dynamically-generated shell commands) that look like they embed a secret."""
+    redacted_any = False
+    result: list[str] = []
+    for entry in entries:
+        if _contains_sensitive_pattern(entry):
+            result.append("***REDACTED***")
+            redacted_any = True
+        else:
+            result.append(entry)
+    return result, redacted_any
 
 
 def _is_binary_sentinel(value: Any) -> bool:
@@ -117,7 +148,7 @@ def _classify_preference_precheck(
     domain: PreferencesDomain, key: str, value: PreferenceValue
 ) -> ClassificationResult | None:
     """SEC-1/SEC-3 gating checks plus ephemeral-noise filtering, run before any tier routing."""
-    if _is_sensitive_key(key):
+    if _contains_sensitive_pattern(key):
         return ClassificationResult(
             tier=ClassificationTier.MANUAL_REPORT,
             destination=f"manual report: key '{key}' in domain '{domain.domain_name}' matches a sensitive pattern",
@@ -485,18 +516,27 @@ def classify_shell_setting(config: ShellConfig) -> list[ClassificationResult]:
             )
         )
 
-    for field_name in ("aliases", "env_vars", "path_components"):
+    for field_name in ENVIRONMENT_MAP:
         field_value = getattr(config, field_name)
-        if field_value:
-            destination = ENVIRONMENT_MAP[field_name]
-            results.append(
-                ClassificationResult(
-                    tier=ClassificationTier.NATIVE,
-                    destination=destination,
-                    nix_path=destination,
-                    metadata={field_name: field_value},
-                )
+        if not field_value:
+            continue
+        destination = ENVIRONMENT_MAP[field_name]
+        metadata: dict[str, Any]
+        if field_name == "path_components":
+            metadata = {field_name: field_value}
+        else:
+            redacted_value, redacted_any = _redact_sensitive_dict_entries(field_value)
+            metadata = {field_name: redacted_value}
+            if redacted_any:
+                metadata["potentially_sensitive_entries_redacted"] = True
+        results.append(
+            ClassificationResult(
+                tier=ClassificationTier.NATIVE,
+                destination=destination,
+                nix_path=destination,
+                metadata=metadata,
             )
+        )
 
     if config.frameworks:
         results.append(
@@ -508,11 +548,15 @@ def classify_shell_setting(config: ShellConfig) -> list[ClassificationResult]:
         )
 
     if config.dynamic_commands:
+        redacted_commands, redacted_any = _redact_sensitive_list_entries(config.dynamic_commands)
+        dynamic_metadata: dict[str, Any] = {"dynamic_commands": redacted_commands}
+        if redacted_any:
+            dynamic_metadata["potentially_sensitive_entries_redacted"] = True
         results.append(
             ClassificationResult(
                 tier=ClassificationTier.MANUAL_REPORT,
                 destination="manual report: dynamically-generated shell commands have no direct nix-darwin equivalent",
-                metadata={"dynamic_commands": config.dynamic_commands},
+                metadata=dynamic_metadata,
             )
         )
 

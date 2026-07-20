@@ -222,6 +222,30 @@ class TestClassifyLaunchAgent:
         assert "LegacyTimers" not in cleaned
         assert cleaned["RunAtLoad"] is True
 
+    def test_nested_raw_plist_values_are_deep_copied_not_shared_with_source(self) -> None:
+        """A shallow copy would leave nested dicts/lists shared with entry.raw_plist,
+        so mutating the classifier's output would silently corrupt the scanned source data.
+        """
+        entry = self._entry(
+            "com.example.myagent",
+            LaunchAgentSource.USER,
+            raw_plist={
+                "Label": "com.example.myagent",
+                "KeepAlive": {"SuccessfulExit": False},
+                "StartCalendarInterval": [{"Hour": 9}],
+            },
+        )
+        result = classify_launch_agent(entry)
+        assert result.metadata is not None
+        cleaned = result.metadata["raw_plist"]
+        assert cleaned["KeepAlive"] is not entry.raw_plist["KeepAlive"]
+        assert cleaned["StartCalendarInterval"] is not entry.raw_plist["StartCalendarInterval"]
+
+        cleaned["KeepAlive"]["SuccessfulExit"] = True
+        cleaned["StartCalendarInterval"][0]["Hour"] = 17
+        assert entry.raw_plist["KeepAlive"]["SuccessfulExit"] is False
+        assert entry.raw_plist["StartCalendarInterval"][0]["Hour"] == 9
+
 
 class TestClassifyApp:
     def test_nixpkgs_app_routes_to_native_system_packages(self) -> None:
@@ -425,3 +449,69 @@ class TestClassifyShellSetting:
         assert len(manual_results) == 2
         assert any("framework" in result.destination for result in manual_results)
         assert any("dynamic" in result.destination.lower() for result in manual_results)
+
+
+class TestClassifyShellSettingSensitiveRedaction:
+    def test_alias_with_embedded_secret_token_in_body_is_redacted(self) -> None:
+        config = ShellConfig(
+            shell_type="zsh", aliases={"awsprod": "AWS_SECRET_ACCESS_KEY=AKIAabc123 aws --profile prod"}
+        )
+        results = classify_shell_setting(config)
+        aliases_result = next(r for r in results if r.destination == "environment.shellAliases")
+        assert aliases_result.metadata is not None
+        assert aliases_result.metadata["aliases"]["awsprod"] == "***REDACTED***"
+        assert aliases_result.metadata["potentially_sensitive_entries_redacted"] is True
+
+    def test_alias_with_sensitive_looking_name_is_redacted(self) -> None:
+        config = ShellConfig(shell_type="zsh", aliases={"show_api_token": "cat ~/.myapp/config"})
+        results = classify_shell_setting(config)
+        aliases_result = next(r for r in results if r.destination == "environment.shellAliases")
+        assert aliases_result.metadata is not None
+        assert aliases_result.metadata["aliases"]["show_api_token"] == "***REDACTED***"
+
+    def test_non_sensitive_alias_is_not_redacted(self) -> None:
+        config = ShellConfig(shell_type="zsh", aliases={"ll": "ls -la"})
+        results = classify_shell_setting(config)
+        aliases_result = next(r for r in results if r.destination == "environment.shellAliases")
+        assert aliases_result.metadata == {"aliases": {"ll": "ls -la"}}
+
+    def test_env_var_with_sensitive_looking_value_is_redacted_even_with_innocuous_name(self) -> None:
+        config = ShellConfig(shell_type="zsh", env_vars={"MY_APP_CONFIG": "AWS_SECRET_ACCESS_KEY=AKIAabc123"})
+        results = classify_shell_setting(config)
+        env_result = next(r for r in results if r.destination == "environment.variables")
+        assert env_result.metadata is not None
+        assert env_result.metadata["env_vars"]["MY_APP_CONFIG"] == "***REDACTED***"
+        assert env_result.metadata["potentially_sensitive_entries_redacted"] is True
+
+    def test_env_var_with_sensitive_looking_name_is_redacted(self) -> None:
+        config = ShellConfig(shell_type="zsh", env_vars={"GITHUB_TOKEN": "ghp_abc123"})
+        results = classify_shell_setting(config)
+        env_result = next(r for r in results if r.destination == "environment.variables")
+        assert env_result.metadata is not None
+        assert env_result.metadata["env_vars"]["GITHUB_TOKEN"] == "***REDACTED***"
+
+    def test_non_sensitive_env_var_is_not_redacted(self) -> None:
+        config = ShellConfig(shell_type="zsh", env_vars={"EDITOR": "nvim"})
+        results = classify_shell_setting(config)
+        env_result = next(r for r in results if r.destination == "environment.variables")
+        assert env_result.metadata == {"env_vars": {"EDITOR": "nvim"}}
+
+    def test_dynamic_command_with_embedded_api_key_is_redacted(self) -> None:
+        config = ShellConfig(shell_type="zsh", dynamic_commands=["eval $(some-cli --api_key=abc123 init)"])
+        results = classify_shell_setting(config)
+        dynamic_result = next(r for r in results if "dynamic" in r.destination.lower())
+        assert dynamic_result.metadata is not None
+        assert dynamic_result.metadata["dynamic_commands"] == ["***REDACTED***"]
+        assert dynamic_result.metadata["potentially_sensitive_entries_redacted"] is True
+
+    def test_non_sensitive_dynamic_command_is_not_redacted(self) -> None:
+        config = ShellConfig(shell_type="zsh", dynamic_commands=["eval $(starship init zsh)"])
+        results = classify_shell_setting(config)
+        dynamic_result = next(r for r in results if "dynamic" in r.destination.lower())
+        assert dynamic_result.metadata == {"dynamic_commands": ["eval $(starship init zsh)"]}
+
+    def test_path_components_are_never_redacted(self) -> None:
+        config = ShellConfig(shell_type="zsh", path_components=["/opt/homebrew/bin"])
+        results = classify_shell_setting(config)
+        path_result = next(r for r in results if r.destination == "environment.systemPath")
+        assert path_result.metadata == {"path_components": ["/opt/homebrew/bin"]}
