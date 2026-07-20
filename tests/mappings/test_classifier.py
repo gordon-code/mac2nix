@@ -462,6 +462,17 @@ class TestClassifyShellSettingSensitiveRedaction:
         assert aliases_result.metadata["aliases"]["awsprod"] == "***REDACTED***"
         assert aliases_result.metadata["potentially_sensitive_entries_redacted"] is True
 
+    def test_alias_with_embedded_passphrase_in_body_is_redacted(self) -> None:
+        config = ShellConfig(
+            shell_type="zsh",
+            aliases={"deploy": "DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE=hunter2 docker push"},
+        )
+        results = classify_shell_setting(config)
+        aliases_result = next(r for r in results if r.destination == "environment.shellAliases")
+        assert aliases_result.metadata is not None
+        assert aliases_result.metadata["aliases"]["deploy"] == "***REDACTED***"
+        assert aliases_result.metadata["potentially_sensitive_entries_redacted"] is True
+
     def test_alias_with_sensitive_looking_name_is_redacted(self) -> None:
         config = ShellConfig(shell_type="zsh", aliases={"show_api_token": "cat ~/.myapp/config"})
         results = classify_shell_setting(config)

@@ -288,7 +288,9 @@ LAUNCHD_DIRS: list[tuple[Path, str]] = [
 ]
 
 
-SENSITIVE_KEY_PATTERNS = frozenset({"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"})
+SENSITIVE_KEY_PATTERNS = frozenset(
+    {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH", "_PASSPHRASE", "_BEARER"}
+)
 
 
 def redact_sensitive_keys(data: dict[str, Any]) -> None:

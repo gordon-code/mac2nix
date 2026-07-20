@@ -67,6 +67,27 @@ _TIMESTAMP_KEY_SUFFIXES: frozenset[str] = frozenset(
     }
 )
 
+# CamelCase-tokenized (lowercased) suffixes indicating a numeric quantity
+# rather than a timestamp. Keys ending in one of these are exempt from
+# _is_timestamp_value_range even when the value happens to fall in a
+# timestamp-like numeric range (e.g. DiskCacheSize=1073741824 is a 1GB byte
+# count, not a date).
+_QUANTITY_KEY_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "size",
+        "limit",
+        "count",
+        "bytes",
+        "length",
+        "capacity",
+        "max",
+        "min",
+        "buffer",
+        "quota",
+        "threshold",
+    }
+)
+
 _UNIX_TIMESTAMP_MIN = 946_684_800  # 2000-01-01
 _UNIX_TIMESTAMP_MAX = 2_208_988_800  # 2040-01-01
 _CFABSOLUTE_TIME_MIN = 100_000_000  # ~2004, seconds since 2001-01-01
@@ -109,6 +130,11 @@ def _is_timestamp_key(key: str) -> bool:
     tokens = _tokenize(key)
     widths = (1, 2)
     return any(len(tokens) >= width and "".join(tokens[-width:]) in _TIMESTAMP_KEY_SUFFIXES for width in widths)
+
+
+def _is_quantity_key(key: str) -> bool:
+    tokens = _tokenize(key)
+    return bool(tokens) and tokens[-1] in _QUANTITY_KEY_SUFFIXES
 
 
 def _is_uuid_string(text: str) -> bool:
@@ -170,7 +196,6 @@ _KEY_PREDICATES: tuple[Any, ...] = (
 )
 
 _VALUE_PREDICATES: tuple[Any, ...] = (
-    _is_timestamp_value_range,
     _is_date_string_value,
     _is_uuid_value,
     _is_binary_data_sentinel,
@@ -186,9 +211,18 @@ def is_ephemeral(key: str, value: Any) -> bool:
     ``WebKitCacheModel``, ``DiskCacheSize``, and ``CachePolicy`` would be
     wrongly filtered. A cache key is only caught here when its *value* is
     independently timestamp-like (via ``_is_timestamp_value_range`` or
-    ``_is_date_string_value``), never from the key name alone.
+    ``_is_date_string_value``), never from the key name alone. Conversely, a
+    key ending in a numeric-quantity word (see ``_QUANTITY_KEY_SUFFIXES``:
+    size, limit, count, bytes, length, capacity, max, min, buffer, quota,
+    threshold) is exempt from ``_is_timestamp_value_range`` even when its
+    value happens to fall in a timestamp-like numeric range, since that's a
+    byte count or limit landing in the Unix-epoch range by coincidence, not
+    an actual timestamp. Opaque keys without such a suffix are still caught
+    by the value-range check.
     """
     if any(predicate(key) for predicate in _KEY_PREDICATES):
+        return True
+    if _is_timestamp_value_range(value) and not _is_quantity_key(key):
         return True
     return any(predicate(value) for predicate in _VALUE_PREDICATES)
 

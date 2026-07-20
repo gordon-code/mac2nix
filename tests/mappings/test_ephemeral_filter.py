@@ -83,6 +83,17 @@ class TestTimestampValueRange:
     def test_out_of_range_large_int_is_not_filtered(self) -> None:
         assert is_ephemeral("FileSizeBytes", 5_000_000_000) is False
 
+    def test_disk_cache_size_in_timestamp_range_is_not_filtered(self) -> None:
+        """1GB byte count lands in the Unix timestamp range by coincidence."""
+        assert is_ephemeral("DiskCacheSize", 1_073_741_824) is False
+
+    def test_memory_limit_in_timestamp_range_is_not_filtered(self) -> None:
+        assert is_ephemeral("MemoryLimit", 1_073_741_824) is False
+
+    def test_opaque_key_with_timestamp_value_is_still_filtered(self) -> None:
+        """Keys with no quantity or time-related suffix still rely on value-range detection."""
+        assert is_ephemeral("SomeInternalField", 1_700_000_000) is True
+
 
 class TestDateStringValue:
     def test_date_only_is_filtered(self) -> None:

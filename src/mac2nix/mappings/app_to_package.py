@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 _VERSION_SUFFIX_RE = re.compile(r"\s+\d+(\.\d+)*$")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 _NAME_OVERRIDES: dict[str, str] = {
     "zoom.us": "zoom",
@@ -34,7 +35,7 @@ def normalize_app_name(name: str) -> str:
     normalized = _VERSION_SUFFIX_RE.sub("", normalized).strip().lower()
     if normalized in _NAME_OVERRIDES:
         return _NAME_OVERRIDES[normalized]
-    return normalized.replace(" ", "-")
+    return _WHITESPACE_RE.sub("-", normalized)
 
 
 def classify_app(name: str) -> AppClassification | None:

@@ -44,6 +44,15 @@ class TestNormalizeAppName:
     def test_leading_digit_in_name_is_preserved(self) -> None:
         assert normalize_app_name("1Password.app") == "1password"
 
+    def test_double_space_collapses_to_single_hyphen(self) -> None:
+        assert normalize_app_name("Google  Chrome.app") == "google-chrome"
+
+    def test_tab_whitespace_is_treated_as_space(self) -> None:
+        assert normalize_app_name("Fire\tfox.app") == "fire-fox"
+
+    def test_newline_whitespace_is_treated_as_space(self) -> None:
+        assert normalize_app_name("Fire\nfox.app") == "fire-fox"
+
 
 class TestClassifyAppNixpkgs:
     def test_firefox(self) -> None:
