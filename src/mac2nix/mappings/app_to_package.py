@@ -51,7 +51,7 @@ APP_TO_PACKAGE: dict[str, AppClassification] = {
     "vlc": AppClassification("nixpkgs", "vlc"),
     "emacs": AppClassification("nixpkgs", "emacs"),
     "iina": AppClassification("nixpkgs", "iina"),
-    "ghostty": AppClassification("nixpkgs", "ghostty"),
+    "ghostty": AppClassification("nixpkgs", "ghostty-bin"),
     "obs": AppClassification("nixpkgs", "obs-studio"),
     "handbrake": AppClassification("nixpkgs", "handbrake"),
     "neovide": AppClassification("nixpkgs", "neovide"),
