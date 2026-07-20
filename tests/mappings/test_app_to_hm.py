@@ -12,7 +12,7 @@ class TestAppToHm:
     def test_ssh_module(self) -> None:
         info = APP_TO_HM_MODULE["ssh"]
         assert info.module_path == "programs.ssh"
-        assert info.config_paths == ["~/.ssh/config"]
+        assert info.config_paths == ("~/.ssh/config",)
 
     def test_fish_module(self) -> None:
         info = APP_TO_HM_MODULE["fish"]
@@ -27,26 +27,26 @@ class TestAppToHm:
     def test_darwin_aware_vscode_module(self) -> None:
         info = APP_TO_HM_MODULE["vscode"]
         assert info.module_path == "programs.vscode"
-        assert info.config_paths == ["~/.config/Code/User/settings.json"]
-        assert info.darwin_config_paths == ["~/Library/Application Support/Code/User/settings.json"]
+        assert info.config_paths == ("~/.config/Code/User/settings.json",)
+        assert info.darwin_config_paths == ("~/Library/Application Support/Code/User/settings.json",)
         assert info.extensions_cmd == "code --list-extensions"
 
     def test_darwin_aware_k9s_lazygit_go_modules(self) -> None:
-        assert APP_TO_HM_MODULE["k9s"].darwin_config_paths == ["~/Library/Application Support/k9s/"]
-        assert APP_TO_HM_MODULE["lazygit"].darwin_config_paths == ["~/Library/Application Support/lazygit/"]
-        assert APP_TO_HM_MODULE["go"].darwin_config_paths == ["~/Library/Application Support/go/env"]
+        assert APP_TO_HM_MODULE["k9s"].darwin_config_paths == ("~/Library/Application Support/k9s/",)
+        assert APP_TO_HM_MODULE["lazygit"].darwin_config_paths == ("~/Library/Application Support/lazygit/",)
+        assert APP_TO_HM_MODULE["go"].darwin_config_paths == ("~/Library/Application Support/go/env",)
 
     def test_darwin_only_rectangle_module(self) -> None:
         info = APP_TO_HM_MODULE["rectangle"]
         assert info.module_path == "programs.rectangle"
-        assert info.config_paths == []
-        assert info.darwin_config_paths == ["~/Library/Preferences/com.knollsoft.Rectangle.plist"]
+        assert info.config_paths == ()
+        assert info.darwin_config_paths == ("~/Library/Preferences/com.knollsoft.Rectangle.plist",)
 
     def test_inject_only_shell_integration_modules(self) -> None:
         for name in ("fzf", "zoxide", "jq", "pyenv"):
             info = APP_TO_HM_MODULE[name]
             assert info.inject_only is True
-            assert info.config_paths == []
+            assert info.config_paths == ()
 
     def test_non_inject_only_module_defaults_false(self) -> None:
         assert APP_TO_HM_MODULE["git"].inject_only is False
@@ -62,7 +62,7 @@ class TestAppToHm:
 
     def test_hm_module_info_defaults(self) -> None:
         info = HMModuleInfo(module_path="programs.example")
-        assert info.config_paths == []
-        assert info.darwin_config_paths == []
+        assert info.config_paths == ()
+        assert info.darwin_config_paths == ()
         assert info.extensions_cmd is None
         assert info.inject_only is False

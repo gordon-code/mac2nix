@@ -485,38 +485,18 @@ def classify_shell_setting(config: ShellConfig) -> list[ClassificationResult]:
             )
         )
 
-    if config.aliases:
-        destination = ENVIRONMENT_MAP["aliases"]
-        results.append(
-            ClassificationResult(
-                tier=ClassificationTier.NATIVE,
-                destination=destination,
-                nix_path=destination,
-                metadata={"aliases": config.aliases},
+    for field_name in ("aliases", "env_vars", "path_components"):
+        field_value = getattr(config, field_name)
+        if field_value:
+            destination = ENVIRONMENT_MAP[field_name]
+            results.append(
+                ClassificationResult(
+                    tier=ClassificationTier.NATIVE,
+                    destination=destination,
+                    nix_path=destination,
+                    metadata={field_name: field_value},
+                )
             )
-        )
-
-    if config.env_vars:
-        destination = ENVIRONMENT_MAP["env_vars"]
-        results.append(
-            ClassificationResult(
-                tier=ClassificationTier.NATIVE,
-                destination=destination,
-                nix_path=destination,
-                metadata={"env_vars": config.env_vars},
-            )
-        )
-
-    if config.path_components:
-        destination = ENVIRONMENT_MAP["path_components"]
-        results.append(
-            ClassificationResult(
-                tier=ClassificationTier.NATIVE,
-                destination=destination,
-                nix_path=destination,
-                metadata={"path_components": config.path_components},
-            )
-        )
 
     if config.frameworks:
         results.append(
