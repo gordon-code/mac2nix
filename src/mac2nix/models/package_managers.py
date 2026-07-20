@@ -182,11 +182,54 @@ class CondaState(BaseModel):
     environments: list[CondaEnvironment] = []
 
 
+class LanguagePackage(BaseModel):
+    """A package installed by a language ecosystem package manager."""
+
+    name: str
+    version: str | None = None
+    binaries: list[str] = []
+
+
+class PipxState(BaseModel):
+    present: bool = False
+    version: str | None = None
+    packages: list[LanguagePackage] = []
+
+
+class CargoState(BaseModel):
+    present: bool = False
+    version: str | None = None
+    packages: list[LanguagePackage] = []
+
+
+class NpmGlobalState(BaseModel):
+    present: bool = False
+    version: str | None = None
+    packages: list[LanguagePackage] = []
+
+
+class GoState(BaseModel):
+    present: bool = False
+    version: str | None = None
+    packages: list[LanguagePackage] = []
+
+
+class GemState(BaseModel):
+    present: bool = False
+    version: str | None = None
+    packages: list[LanguagePackage] = []
+
+
 class PackageManagersResult(BaseModel):
     """Third-party (non-Homebrew, non-Nix) package managers."""
 
     macports: MacPortsState = Field(default_factory=MacPortsState)
     conda: CondaState = Field(default_factory=CondaState)
+    pipx: PipxState = Field(default_factory=PipxState)
+    cargo: CargoState = Field(default_factory=CargoState)
+    npm_global: NpmGlobalState = Field(default_factory=NpmGlobalState)
+    go: GoState = Field(default_factory=GoState)
+    gem: GemState = Field(default_factory=GemState)
 
 
 class ContainerRuntimeType(StrEnum):

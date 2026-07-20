@@ -5,8 +5,11 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
+from xml.etree import ElementTree
 
 from mac2nix.scanners._utils import (
+    _parse_xml_dict,
+    _parse_xml_value,
     hash_file,
     read_launchd_plists,
     read_plist_safe,
@@ -99,6 +102,19 @@ class TestReadPlistSafe:
             result = read_plist_safe(plist_file)
 
         assert result is None
+
+    def test_read_plist_safe_invalid_falls_back_to_plutil(self, tmp_path: Path) -> None:
+        plist_file = tmp_path / "nextstep.plist"
+        plist_file.write_bytes(plistlib.dumps({"key": "recovered"}))
+
+        with patch(
+            "mac2nix.scanners._utils.plistlib.load",
+            side_effect=plistlib.InvalidFileException("Invalid file"),
+        ):
+            result = read_plist_safe(plist_file)
+
+        assert result is not None
+        assert result["key"] == "recovered"
 
     def test_read_plist_safe_corrupt_datetime_falls_back_to_plutil(self, tmp_path: Path) -> None:
         plist_file = tmp_path / "corrupt_date.plist"
@@ -254,3 +270,55 @@ class TestReadLaunchdPlists:
         assert len(results) == 2
         source_keys = {r[1] for r in results}
         assert source_keys == {"user", "system"}
+
+
+class TestParseXmlValue:
+    def test_empty_integer_element(self) -> None:
+        elem = ElementTree.fromstring("<integer/>")
+        assert _parse_xml_value(elem) == ""
+
+    def test_valid_integer(self) -> None:
+        elem = ElementTree.fromstring("<integer>42</integer>")
+        assert _parse_xml_value(elem) == 42
+
+    def test_valid_real(self) -> None:
+        elem = ElementTree.fromstring("<real>3.14</real>")
+        assert _parse_xml_value(elem) == 3.14
+
+    def test_empty_real_element(self) -> None:
+        elem = ElementTree.fromstring("<real/>")
+        assert _parse_xml_value(elem) == ""
+
+    def test_data_element(self) -> None:
+        elem = ElementTree.fromstring("<data>SGVsbG8=</data>")
+        assert _parse_xml_value(elem) == "SGVsbG8="
+
+    def test_date_element(self) -> None:
+        elem = ElementTree.fromstring("<date>2026-01-01T00:00:00Z</date>")
+        assert _parse_xml_value(elem) == "2026-01-01T00:00:00Z"
+
+    def test_nested_array_in_dict(self) -> None:
+        xml = "<dict><key>items</key><array><string>a</string><string>b</string></array></dict>"
+        elem = ElementTree.fromstring(xml)
+        result = _parse_xml_dict(elem)
+        assert result == {"items": ["a", "b"]}
+
+    def test_boolean_values(self) -> None:
+        assert _parse_xml_value(ElementTree.fromstring("<true/>")) is True
+        assert _parse_xml_value(ElementTree.fromstring("<false/>")) is False
+
+
+class TestPlutilArrayRoot:
+    def test_plutil_fallback_handles_array_root(self, tmp_path: Path) -> None:
+        plist_file = tmp_path / "array.plist"
+        plist_file.write_bytes(plistlib.dumps(["item1", "item2", "item3"]))
+
+        with patch(
+            "mac2nix.scanners._utils.plistlib.load",
+            side_effect=plistlib.InvalidFileException("Invalid file"),
+        ):
+            result = read_plist_safe(plist_file)
+
+        assert result is not None
+        assert isinstance(result, list)
+        assert result == ["item1", "item2", "item3"]

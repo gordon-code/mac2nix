@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from mac2nix.models.services import LaunchAgentEntry, LaunchAgentSource, LaunchAgentsResult
-from mac2nix.scanners._utils import read_launchd_plists, run_command
+from mac2nix.scanners._utils import SENSITIVE_KEY_PATTERNS, read_launchd_plists, redact_sensitive_keys, run_command
 from mac2nix.scanners.base import BaseScannerPlugin, register
 
 logger = logging.getLogger(__name__)
@@ -22,8 +22,6 @@ _SOURCE_MAP: dict[str, LaunchAgentSource] = {
     "system": LaunchAgentSource.SYSTEM,
     "daemon": LaunchAgentSource.DAEMON,
 }
-
-_SENSITIVE_ENV_PATTERNS = {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"}
 
 
 @register("launch_agents")
@@ -76,14 +74,7 @@ class LaunchAgentsScanner(BaseScannerPlugin):
 
         # Deep copy to avoid mutating the shared prefetch data
         raw_plist = copy.deepcopy(data)
-        env_raw = data.get("EnvironmentVariables")
-        if isinstance(env_raw, dict):
-            redacted = {
-                k: "***REDACTED***" if any(p in k.upper() for p in _SENSITIVE_ENV_PATTERNS) else v
-                for k, v in env_raw.items()
-            }
-            if redacted != env_raw:
-                raw_plist["EnvironmentVariables"] = redacted
+        redact_sensitive_keys(raw_plist)
 
         # Extract filtered environment variables
         env_vars = data.get("EnvironmentVariables")
@@ -91,7 +82,7 @@ class LaunchAgentsScanner(BaseScannerPlugin):
         if isinstance(env_vars, dict):
             filtered_env = {}
             for key, val in env_vars.items():
-                if any(p in key.upper() for p in _SENSITIVE_ENV_PATTERNS):
+                if any(p in key.upper() for p in SENSITIVE_KEY_PATTERNS):
                     filtered_env[key] = "***REDACTED***"
                 else:
                     filtered_env[key] = str(val)

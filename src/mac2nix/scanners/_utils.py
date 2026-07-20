@@ -288,6 +288,22 @@ LAUNCHD_DIRS: list[tuple[Path, str]] = [
 ]
 
 
+SENSITIVE_KEY_PATTERNS = frozenset({"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"})
+
+
+def redact_sensitive_keys(data: dict[str, Any]) -> None:
+    """Recursively redact values whose key contains a sensitive pattern."""
+    for key in list(data.keys()):
+        if any(p in key.upper() for p in SENSITIVE_KEY_PATTERNS):
+            data[key] = "***REDACTED***"
+        elif isinstance(data[key], dict):
+            redact_sensitive_keys(data[key])
+        elif isinstance(data[key], list):
+            for item in data[key]:
+                if isinstance(item, dict):
+                    redact_sensitive_keys(item)
+
+
 def sanitize_plist_values(obj: Any) -> Any:
     """Recursively convert non-JSON-safe plist values.
 
@@ -348,15 +364,12 @@ def read_plist_safe(path: Path) -> dict[str, Any] | list[Any] | None:
         else:
             logger.warning("Permission denied reading plist: %s", path)
         return None
-    except plistlib.InvalidFileException:
-        logger.warning("Invalid plist file: %s", path)
-        return None
-    except (ValueError, OverflowError):
-        # plistlib can't handle dates like year 0 (Apple's "no date" sentinel).
-        # Fall back to plutil XML conversion which preserves dates as strings.
+    except (plistlib.InvalidFileException, ValueError, OverflowError):
+        # plistlib can't handle NeXTStep-format plists, some newer binary plist
+        # variants, or dates like year 0.  Fall back to plutil XML conversion.
         data = _read_plist_via_plutil(path)
         if data is None:
-            logger.warning("Plist contains unrepresentable data: %s", path)
+            logger.debug("Skipping unreadable plist: %s", path)
             return None
     except OSError as exc:
         logger.warning("Failed to read plist %s: %s", path, exc)
@@ -365,7 +378,7 @@ def read_plist_safe(path: Path) -> dict[str, Any] | list[Any] | None:
     return sanitize_plist_values(data)
 
 
-def _read_plist_via_plutil(path: Path) -> dict[str, Any] | None:
+def _read_plist_via_plutil(path: Path) -> dict[str, Any] | list[Any] | None:
     """Fallback plist reader using plutil XML conversion.
 
     Parses the XML manually to handle dates that Python's datetime can't
@@ -381,10 +394,14 @@ def _read_plist_via_plutil(path: Path) -> dict[str, Any] | None:
         return None
 
     top_dict = root.find("dict")
-    if top_dict is None:
-        return None
+    if top_dict is not None:
+        return _parse_xml_dict(top_dict)
 
-    return _parse_xml_dict(top_dict)
+    top_array = root.find("array")
+    if top_array is not None:
+        return [_parse_xml_value(child) for child in top_array]
+
+    return None
 
 
 def _parse_xml_dict(element: ElementTree.Element) -> dict[str, Any]:
@@ -420,7 +437,9 @@ def _parse_xml_value(element: ElementTree.Element) -> Any:
     # string, date, data → text; integer/real → parsed; unknown → text
     converters: dict[str, Any] = {"integer": int, "real": float}
     converter = converters.get(tag)
-    return converter(text) if converter else text
+    if converter and text:
+        return converter(text)
+    return text
 
 
 def read_launchd_plists() -> list[tuple[Path, str, dict[str, Any]]]:

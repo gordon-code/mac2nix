@@ -32,6 +32,7 @@ class NetworkConfig(BaseModel):
     wifi_networks: list[str] = []
     vpn_profiles: list[VpnProfile] = []
     proxy_bypass_domains: list[str] = []
+    known_network_services: list[str] = []
     locations: list[str] = []
     current_location: str | None = None
 
@@ -85,6 +86,7 @@ class ICloudState(BaseModel):
 
 class SystemConfig(BaseModel):
     hostname: str
+    computer_name: str | None = None
     timezone: str | None = None
     locale: str | None = None
     power_settings: dict[str, str] = {}  # pmset key-value pairs
