@@ -35,7 +35,7 @@ class TestAppConfigRegistry:
         info = APP_CONFIG_REGISTRY["com.apple.Safari"]
         assert info.file_type == ConfigFileType.DATABASE
         assert info.scannable is False
-        assert info.config_paths == ["~/Library/Safari/History.db"]
+        assert info.config_paths == ("~/Library/Safari/History.db",)
 
     def test_vscode_settings_are_json_and_scannable(self):
         info = APP_CONFIG_REGISTRY["com.microsoft.VSCode"]
@@ -56,9 +56,9 @@ class TestAppConfigRegistry:
     def test_docker_settings_are_json(self):
         info = APP_CONFIG_REGISTRY["com.docker.docker"]
         assert info.file_type == ConfigFileType.JSON
-        assert info.config_paths == ["~/Library/Group Containers/group.com.docker/settings.json"]
+        assert info.config_paths == ("~/Library/Group Containers/group.com.docker/settings.json",)
 
     def test_notes_default_to_none(self):
-        info = AppConfigInfo(config_paths=["~/foo"], file_type=ConfigFileType.UNKNOWN)
+        info = AppConfigInfo(config_paths=("~/foo",), file_type=ConfigFileType.UNKNOWN)
         assert info.notes is None
         assert info.scannable is True

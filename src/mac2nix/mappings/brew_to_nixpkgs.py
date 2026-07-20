@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class NixpkgsEquivalent:
     attr_name: str
     note: str | None = None

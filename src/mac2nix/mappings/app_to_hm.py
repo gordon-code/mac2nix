@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class HMModuleInfo:
     """Metadata describing a home-manager ``programs.*`` module for a detected app or tool."""
 

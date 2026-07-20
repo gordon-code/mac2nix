@@ -17,6 +17,7 @@ architect plan and security design review this implementation follows.
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -143,6 +144,8 @@ def _classify_preference_precheck(
         )
 
     if is_ephemeral(key, value):
+        # Phase 6 generators must check metadata.get("skipped") before surfacing
+        # MANUAL_REPORT entries, so ephemeral values aren't shown in a manual-steps report.
         return ClassificationResult(
             tier=ClassificationTier.MANUAL_REPORT,
             destination="skipped: ephemeral UI/runtime state, not reproducible config",
@@ -230,7 +233,7 @@ def classify_launch_agent(entry: LaunchAgentEntry) -> ClassificationResult:
             metadata={"label": entry.label, "source": entry.source.value},
         )
 
-    cleaned_plist = {k: v for k, v in entry.raw_plist.items() if not is_launchd_key_droppable(k)}
+    cleaned_plist = {k: copy.deepcopy(v) for k, v in entry.raw_plist.items() if not is_launchd_key_droppable(k)}
     if entry.source == LaunchAgentSource.DAEMON:
         tier = ClassificationTier.ACTIVATION_SCRIPT
         destination = f'launchd.daemons."{entry.label}".serviceConfig'
