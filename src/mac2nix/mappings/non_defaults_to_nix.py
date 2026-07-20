@@ -319,6 +319,17 @@ SECURITY_MAP: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# Environment (environment.shellAliases, environment.variables, environment.systemPath)
+# ---------------------------------------------------------------------------
+
+ENVIRONMENT_MAP: dict[str, str] = {
+    "aliases": "environment.shellAliases",
+    "env_vars": "environment.variables",
+    "path_components": "environment.systemPath",
+}
+
+
+# ---------------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------------
 

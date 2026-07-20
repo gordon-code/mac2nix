@@ -5,6 +5,7 @@ from pathlib import Path
 from mac2nix.mappings.classifier import (
     ClassificationTier,
     classify_app,
+    classify_app_config,
     classify_brew_formula,
     classify_dotfile,
     classify_font,
@@ -18,7 +19,7 @@ from mac2nix.mappings.classifier import (
 from mac2nix.models.application import AppSource, BrewFormula, InstalledApp
 from mac2nix.models.files import DotfileEntry, DotfileManager, FontEntry, FontSource
 from mac2nix.models.preferences import PreferencesDomain
-from mac2nix.models.services import LaunchAgentEntry, LaunchAgentSource, ShellConfig
+from mac2nix.models.services import LaunchAgentEntry, LaunchAgentSource, ShellConfig, ShellFramework
 
 
 def _domain(name: str, keys: dict, *, source_path: Path | None = None, source: str = "disk") -> PreferencesDomain:
@@ -256,6 +257,27 @@ class TestClassifyApp:
         assert result.tier == ClassificationTier.MANUAL_REPORT
 
 
+class TestClassifyAppConfig:
+    def test_scannable_config_routes_to_custom_prefs(self) -> None:
+        result = classify_app_config("com.microsoft.VSCode")
+        assert result.tier == ClassificationTier.CUSTOM_PREFS
+        assert result.metadata is not None
+        assert result.metadata["bundle_id"] == "com.microsoft.VSCode"
+        assert "~/Library/Application Support/Code/User/settings.json" in result.metadata["config_paths"]
+
+    def test_non_scannable_config_routes_to_manual_report(self) -> None:
+        result = classify_app_config("com.apple.Safari")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.metadata is not None
+        assert result.metadata["bundle_id"] == "com.apple.Safari"
+        assert "not scannable" in result.destination
+
+    def test_unrecognized_bundle_id_routes_to_manual_report(self) -> None:
+        result = classify_app_config("com.example.SomeUnknownApp")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.metadata == {"bundle_id": "com.example.SomeUnknownApp"}
+
+
 class TestClassifyDotfile:
     def test_known_dotfile_routes_to_home_manager_program(self) -> None:
         entry = DotfileEntry(path=Path.home() / ".zshrc", managed_by=DotfileManager.MANUAL)
@@ -323,6 +345,11 @@ class TestClassifySystemSetting:
         result = classify_system_setting("icloud", {"signed_in": True})
         assert result.tier == ClassificationTier.MANUAL_REPORT
 
+    def test_timezone_routes_to_native_time_timezone(self) -> None:
+        result = classify_system_setting("timezone", "America/New_York")
+        assert result.tier == ClassificationTier.NATIVE
+        assert result.nix_path == "time.timeZone"
+
 
 class TestClassifySecuritySetting:
     def test_known_security_field_routes_to_native(self) -> None:
@@ -363,3 +390,38 @@ class TestClassifyShellSetting:
         results = classify_shell_setting(config)
         assert len(results) == 1
         assert results[0].tier == ClassificationTier.MANUAL_REPORT
+
+    def test_aliases_env_vars_and_path_components_each_produce_a_native_result(self) -> None:
+        config = ShellConfig(
+            shell_type="fish",
+            aliases={"ll": "ls -la"},
+            env_vars={"EDITOR": "nvim"},
+            path_components=["/opt/homebrew/bin"],
+        )
+        results = classify_shell_setting(config)
+        assert len(results) == 4
+        by_destination = {result.destination: result for result in results}
+        assert by_destination["environment.shellAliases"].tier == ClassificationTier.NATIVE
+        assert by_destination["environment.shellAliases"].metadata == {"aliases": {"ll": "ls -la"}}
+        assert by_destination["environment.variables"].tier == ClassificationTier.NATIVE
+        assert by_destination["environment.variables"].metadata == {"env_vars": {"EDITOR": "nvim"}}
+        assert by_destination["environment.systemPath"].tier == ClassificationTier.NATIVE
+        assert by_destination["environment.systemPath"].metadata == {"path_components": ["/opt/homebrew/bin"]}
+
+    def test_empty_aliases_env_vars_and_path_components_produce_no_extra_results(self) -> None:
+        config = ShellConfig(shell_type="zsh")
+        results = classify_shell_setting(config)
+        assert len(results) == 1
+
+    def test_frameworks_and_dynamic_commands_route_to_manual_report(self) -> None:
+        config = ShellConfig(
+            shell_type="zsh",
+            frameworks=[ShellFramework(name="oh-my-zsh")],
+            dynamic_commands=["eval $(starship init zsh)"],
+        )
+        results = classify_shell_setting(config)
+        assert len(results) == 3
+        manual_results = [result for result in results if result.tier == ClassificationTier.MANUAL_REPORT]
+        assert len(manual_results) == 2
+        assert any("framework" in result.destination for result in manual_results)
+        assert any("dynamic" in result.destination.lower() for result in manual_results)

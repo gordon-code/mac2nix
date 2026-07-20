@@ -1,6 +1,7 @@
 """Tests for non_defaults_to_nix mapping."""
 
 from mac2nix.mappings.non_defaults_to_nix import (
+    ENVIRONMENT_MAP,
     LAUNCHD_KEYS_TO_DROP,
     LAUNCHD_LABEL_TO_SERVICE,
     NETWORKING_MAP,
@@ -149,6 +150,13 @@ class TestSecurityMap:
             if "firewall" in option.lower():
                 assert option.startswith("networking.applicationFirewall.")
                 assert "alf" not in option.lower()
+
+
+class TestEnvironmentMap:
+    def test_contains_expected_fields(self) -> None:
+        assert ENVIRONMENT_MAP["aliases"] == "environment.shellAliases"
+        assert ENVIRONMENT_MAP["env_vars"] == "environment.variables"
+        assert ENVIRONMENT_MAP["path_components"] == "environment.systemPath"
 
 
 class TestTimezoneOption:

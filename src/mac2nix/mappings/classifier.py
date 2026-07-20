@@ -25,14 +25,17 @@ from pathlib import Path
 from typing import Any
 
 from mac2nix.mappings import app_to_package
+from mac2nix.mappings.app_config_registry import get_app_config
 from mac2nix.mappings.app_to_hm import get_hm_module
 from mac2nix.mappings.brew_to_nixpkgs import get_nixpkgs_equivalent, is_unnecessary_in_nix
 from mac2nix.mappings.defaults_to_nix import get_nix_option
 from mac2nix.mappings.dotfile_to_hm import get_hm_program
 from mac2nix.mappings.ephemeral_filter import is_ephemeral
 from mac2nix.mappings.non_defaults_to_nix import (
+    ENVIRONMENT_MAP,
     NETWORKING_MAP,
     SECURITY_MAP,
+    TIMEZONE_NIX_OPTION,
     get_font_nixpkgs,
     get_launchd_service,
     get_power_nix_option,
@@ -290,6 +293,42 @@ def classify_app(app: InstalledApp) -> ClassificationResult:
     )
 
 
+def classify_app_config(bundle_id: str) -> ClassificationResult:
+    """Classify an app's Application Support (or equivalent) config location via app_config_registry.
+
+    Registry entries flagged `scannable` route to Tier 2 as a candidate for
+    further per-key analysis; entries flagged not scannable (opaque
+    databases, encrypted vaults, LevelDB stores) and bundle IDs with no
+    registry entry both route to Tier 4.
+    """
+    info = get_app_config(bundle_id)
+    if info is None:
+        return ClassificationResult(
+            tier=ClassificationTier.MANUAL_REPORT,
+            destination=f"manual report: unknown app config location for bundle id '{bundle_id}'",
+            metadata={"bundle_id": bundle_id},
+        )
+
+    metadata: dict[str, Any] = {
+        "bundle_id": bundle_id,
+        "config_paths": list(info.config_paths),
+        "file_type": info.file_type.value,
+        "notes": info.notes,
+    }
+    if info.scannable:
+        return ClassificationResult(
+            tier=ClassificationTier.CUSTOM_PREFS,
+            destination="CustomUserPreferences: further scan recommended",
+            metadata=metadata,
+        )
+
+    return ClassificationResult(
+        tier=ClassificationTier.MANUAL_REPORT,
+        destination=f"manual report: app config for '{bundle_id}' not scannable (e.g. database)",
+        metadata=metadata,
+    )
+
+
 def classify_dotfile(entry: DotfileEntry) -> ClassificationResult:
     """Classify a scanned dotfile by its home-manager program module, if any."""
     hm_program = get_hm_program(entry.path)
@@ -357,7 +396,17 @@ def classify_font(entry: FontEntry) -> ClassificationResult:
 
 
 def classify_system_setting(field_name: str, value: Any) -> ClassificationResult:
-    """Classify a SystemConfig field (currently: pmset power settings)."""
+    """Classify a SystemConfig field: pmset power settings via POWER_SETTING_MAP,
+    plus the standalone ``timezone`` field routed to TIMEZONE_NIX_OPTION.
+    """
+    if field_name == "timezone":
+        return ClassificationResult(
+            tier=ClassificationTier.NATIVE,
+            destination=TIMEZONE_NIX_OPTION,
+            nix_path=TIMEZONE_NIX_OPTION,
+            metadata={"field_name": field_name, "value": value},
+        )
+
     nix_path = get_power_nix_option(field_name)
     if nix_path is None:
         return ClassificationResult(
@@ -408,21 +457,80 @@ def classify_network_setting(field_name: str, value: Any) -> ClassificationResul
 
 
 def classify_shell_setting(config: ShellConfig) -> list[ClassificationResult]:
-    """Classify a scanned shell configuration's shell type."""
+    """Classify a scanned shell configuration: program enablement, environment
+    state (aliases/env vars/PATH), and any framework or dynamically-generated
+    command with no direct nix-darwin equivalent.
+    """
+    results: list[ClassificationResult] = []
+
     nix_path = get_shell_program(config.shell_type)
     if nix_path is None:
-        return [
+        results.append(
             ClassificationResult(
                 tier=ClassificationTier.MANUAL_REPORT,
                 destination=f"manual report: no nix-darwin program mapping for shell type '{config.shell_type}'",
                 metadata={"shell_type": config.shell_type},
             )
-        ]
-    return [
-        ClassificationResult(
-            tier=ClassificationTier.NATIVE,
-            destination=nix_path,
-            nix_path=nix_path,
-            metadata={"shell_type": config.shell_type},
         )
-    ]
+    else:
+        results.append(
+            ClassificationResult(
+                tier=ClassificationTier.NATIVE,
+                destination=nix_path,
+                nix_path=nix_path,
+                metadata={"shell_type": config.shell_type},
+            )
+        )
+
+    if config.aliases:
+        destination = ENVIRONMENT_MAP["aliases"]
+        results.append(
+            ClassificationResult(
+                tier=ClassificationTier.NATIVE,
+                destination=destination,
+                nix_path=destination,
+                metadata={"aliases": config.aliases},
+            )
+        )
+
+    if config.env_vars:
+        destination = ENVIRONMENT_MAP["env_vars"]
+        results.append(
+            ClassificationResult(
+                tier=ClassificationTier.NATIVE,
+                destination=destination,
+                nix_path=destination,
+                metadata={"env_vars": config.env_vars},
+            )
+        )
+
+    if config.path_components:
+        destination = ENVIRONMENT_MAP["path_components"]
+        results.append(
+            ClassificationResult(
+                tier=ClassificationTier.NATIVE,
+                destination=destination,
+                nix_path=destination,
+                metadata={"path_components": config.path_components},
+            )
+        )
+
+    if config.frameworks:
+        results.append(
+            ClassificationResult(
+                tier=ClassificationTier.MANUAL_REPORT,
+                destination="manual report: shell framework(s) have no direct nix-darwin equivalent",
+                metadata={"frameworks": [framework.name for framework in config.frameworks]},
+            )
+        )
+
+    if config.dynamic_commands:
+        results.append(
+            ClassificationResult(
+                tier=ClassificationTier.MANUAL_REPORT,
+                destination="manual report: dynamically-generated shell commands have no direct nix-darwin equivalent",
+                metadata={"dynamic_commands": config.dynamic_commands},
+            )
+        )
+
+    return results
