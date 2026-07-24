@@ -1,11 +1,14 @@
 """Tests for scanner utility functions."""
 
+import logging
 import plistlib
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
+
+import pytest
 
 from mac2nix.scanners._utils import (
     _parse_xml_dict,
@@ -53,6 +56,19 @@ class TestRunCommand:
             result = run_command(["sleep", "999"], timeout=1)
 
         assert result is None
+
+    def test_run_command_logs_warning_on_nonzero_exit(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/false"),
+            patch("mac2nix.scanners._utils.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(args=["false"], returncode=1, stdout="", stderr="boom")
+            result = run_command(["false"])
+
+        assert result is not None
+        assert result.returncode == 1
+        assert any("1" in r.message and "boom" in r.message for r in caplog.records)
 
     def test_run_command_file_not_found(self) -> None:
         with (

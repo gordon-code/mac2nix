@@ -68,8 +68,14 @@ class HomebrewScanner(BaseScannerPlugin):
         mas_apps: list[MasApp] = []
 
         result = run_command(["brew", "bundle", "dump", "--file=-"])
-        if result is None or result.returncode != 0:
-            logger.warning("brew bundle dump failed or brew not available")
+        if result is None:
+            # run_command() already logged the specific cause (timeout or
+            # executable disappeared mid-run) -- nothing more to add here.
+            return taps, formulae, casks, mas_apps
+        if result.returncode != 0:
+            # run_command() already logged the exit code and stderr (Step 1) -- add
+            # homebrew-specific framing only.
+            logger.warning("Unable to enumerate Homebrew state via 'brew bundle dump'")
             return taps, formulae, casks, mas_apps
 
         for raw_line in result.stdout.splitlines():

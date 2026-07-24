@@ -333,7 +333,7 @@ def run_command(
     """Run a subprocess command safely.
 
     Validates that the executable exists before running. Never uses shell=True.
-    Returns None on any failure (command not found, non-zero exit, timeout).
+    Returns None if the executable is not found or on timeout.
     """
     executable = cmd[0]
     if shutil.which(executable) is None:
@@ -342,7 +342,10 @@ def run_command(
 
     logger.debug("Running command: %s", cmd)
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)  # noqa: S603
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)  # noqa: S603
+        if result.returncode != 0:
+            logger.warning("Command exited %d: %s\nstderr: %s", result.returncode, cmd, result.stderr.strip())
+        return result
     except subprocess.TimeoutExpired:
         logger.warning("Command timed out after %ds: %s", timeout, cmd)
         return None
