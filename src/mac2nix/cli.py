@@ -5,18 +5,81 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.live import Live
+from rich.spinner import Spinner
+from rich.table import Table
+from rich.text import Text
 
 from mac2nix.models.system_state import SystemState
 from mac2nix.orchestrator import run_scan
+from mac2nix.scan_report import ScannerOutcome, ScannerStatus, capture_scanner_logs, get_remediation_hint
 from mac2nix.scanners import get_all_scanners
 from mac2nix.vm.discovery import DiscoveryRunner
 from mac2nix.vm.manager import TartVMManager
 from mac2nix.vm.validator import Validator
+
+_STATUS_ICONS: dict[ScannerStatus, tuple[str, str]] = {
+    ScannerStatus.SUCCESS: ("✓", "green"),
+    ScannerStatus.WARNING: ("⚠", "yellow"),
+    ScannerStatus.ERROR: ("✗", "red"),
+    ScannerStatus.SKIPPED: ("⊘", "dim"),
+}
+
+_TALLY_LABELS: dict[ScannerStatus, str] = {
+    ScannerStatus.SUCCESS: "success",
+    ScannerStatus.WARNING: "warning",
+    ScannerStatus.ERROR: "error",
+    ScannerStatus.SKIPPED: "skipped",
+}
+
+
+def _status_icon(status: ScannerStatus) -> tuple[str, str]:
+    """Return (icon, style) for a scanner's status."""
+    return _STATUS_ICONS[status]
+
+
+def _build_scan_table(outcomes: dict[str, ScannerOutcome], order: Sequence[str]) -> Table:
+    """Render one row per scanner in `order`, with sub-rows for warnings/errors."""
+    table = Table(box=None, show_header=False, padding=(0, 1))
+    table.add_column(width=2, justify="center")
+    table.add_column()
+    table.add_column(justify="right")
+    table.add_column()
+
+    for name in order:
+        outcome = outcomes.get(name)
+        if outcome is None:
+            table.add_row(Spinner("dots"), name, "", "")
+            continue
+
+        icon, style = _status_icon(outcome.status)
+        detail = ""
+        if outcome.status is ScannerStatus.WARNING:
+            detail = f"{len(outcome.warnings)} warning(s)"
+        elif outcome.status is ScannerStatus.ERROR:
+            detail = "error"
+
+        table.add_row(Text(icon, style=style), name, f"{outcome.elapsed:.1f}s", detail)
+
+        if outcome.status in (ScannerStatus.WARNING, ScannerStatus.ERROR) and outcome.warnings:
+            for warning in outcome.warnings:
+                table.add_row("", Text(f"  ↳ {warning}", style="dim"), "", "")
+                hint = get_remediation_hint(warning)
+                if hint is not None:
+                    table.add_row("", Text(f"     → {hint}", style="dim italic"), "", "")
+
+        if outcome.status is ScannerStatus.ERROR and outcome.error is not None:
+            table.add_row("", Text(f"  ↳ {outcome.error}", style="dim"), "", "")
+            hint = get_remediation_hint(outcome.error)
+            if hint is not None:
+                table.add_row("", Text(f"     → {hint}", style="dim italic"), "", "")
+
+    return table
 
 
 @click.group()
@@ -54,37 +117,50 @@ def scan(output: Path | None, selected_scanners: tuple[str, ...]) -> None:
             available = ", ".join(sorted(all_names))
             raise click.UsageError(f"Unknown scanner(s): {', '.join(unknown)}. Available: {available}")
 
-    total = len(scanners) if scanners is not None else len(all_names)
+    scanner_names: list[str] = scanners if scanners is not None else all_names
 
-    completed: int = 0
+    outcomes: dict[str, ScannerOutcome] = {}
     start = time.monotonic()
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        console=Console(stderr=True),
-        transient=True,
-        redirect_stdout=False,
-        redirect_stderr=False,
-    ) as progress:
-        task_id = progress.add_task("Scanning...", total=total)
+    with (
+        capture_scanner_logs() as log_handler,
+        Live(
+            _build_scan_table(outcomes, scanner_names),
+            console=Console(stderr=True),
+            refresh_per_second=8,
+            transient=False,
+        ) as live,
+    ):
 
-        def progress_callback(name: str) -> None:
-            nonlocal completed
-            completed += 1
-            progress.advance(task_id)
-            progress.update(task_id, description=f"[bold cyan]{name}[/] done")
+        def progress_callback(outcome: ScannerOutcome) -> None:
+            outcomes[outcome.name] = outcome
+            live.update(_build_scan_table(outcomes, scanner_names))
 
         try:
-            state = asyncio.run(run_scan(scanners=scanners, progress_callback=progress_callback))
+            state = asyncio.run(
+                run_scan(scanners=scanners, progress_callback=progress_callback, log_handler=log_handler)
+            )
         except RuntimeError as e:
             raise click.ClickException(str(e)) from e
 
     elapsed = time.monotonic() - start
-    scanner_count = completed
+
+    if log_handler.unattributed:
+        click.echo("General warnings:", err=True)
+        for warning in log_handler.unattributed:
+            click.echo(f"  {warning}", err=True)
+            hint = get_remediation_hint(warning)
+            if hint is not None:
+                click.echo(f"    → {hint}", err=True)
+
+    tally_counts: dict[ScannerStatus, int] = {}
+    for outcome in outcomes.values():
+        tally_counts[outcome.status] = tally_counts.get(outcome.status, 0) + 1
+    tally = ", ".join(
+        f"{tally_counts[status]} {_TALLY_LABELS[status]}"
+        for status in (ScannerStatus.SUCCESS, ScannerStatus.WARNING, ScannerStatus.ERROR, ScannerStatus.SKIPPED)
+        if tally_counts.get(status, 0) > 0
+    )
 
     json_output = state.to_json()
 
@@ -92,12 +168,12 @@ def scan(output: Path | None, selected_scanners: tuple[str, ...]) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json_output)
         click.echo(
-            f"Scanned {scanner_count} scanner(s) in {elapsed:.1f}s — wrote {output}",
+            f"Scanned {len(outcomes)} scanner(s) in {elapsed:.1f}s ({tally}) — wrote {output}",
             err=True,
         )
     else:
         click.echo(
-            f"Scanned {scanner_count} scanner(s) in {elapsed:.1f}s",
+            f"Scanned {len(outcomes)} scanner(s) in {elapsed:.1f}s ({tally})",
             err=True,
         )
         click.echo(json_output)

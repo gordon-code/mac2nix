@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
+from rich.console import Console
 
-from mac2nix.cli import main
+from mac2nix.cli import _build_scan_table, _status_icon, main
 from mac2nix.models.system_state import SystemState
+from mac2nix.scan_report import ScannerOutcome, ScannerStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -34,6 +36,12 @@ def _extract_json(output: str) -> str:
     if start == -1:
         return output
     return output[start:]
+
+
+def _render_table(outcomes: dict[str, ScannerOutcome], order: list[str], width: int = 100) -> str:
+    console = Console(record=True, width=width)
+    console.print(_build_scan_table(outcomes, order))
+    return console.export_text()
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +269,154 @@ class TestScanErrorHandling:
 
         assert result.exit_code == 0
         assert output_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# _status_icon / _build_scan_table
+# ---------------------------------------------------------------------------
+
+
+class TestStatusIcon:
+    def test_skipped_is_visually_distinct_from_success(self) -> None:
+        assert _status_icon(ScannerStatus.SKIPPED) != _status_icon(ScannerStatus.SUCCESS)
+
+
+class TestBuildScanTablePending:
+    def test_scanner_with_no_outcome_yet_still_shows_its_name(self) -> None:
+        """Regression test: previously a pending scanner (e.g. "applications") never appeared."""
+        text = _render_table({}, ["applications"])
+
+        assert "applications" in text
+
+
+class TestBuildScanTableSuccess:
+    def test_success_row_has_no_warning_or_error_detail_and_no_sub_rows(self) -> None:
+        outcomes = {"shell": ScannerOutcome(name="shell", status=ScannerStatus.SUCCESS, elapsed=0.3)}
+
+        text = _render_table(outcomes, ["shell"])
+
+        assert "shell" in text
+        assert "warning" not in text.lower()
+        assert "error" not in text.lower()
+        assert "↳" not in text
+
+
+class TestBuildScanTableWarning:
+    def test_warning_row_shows_short_detail_with_full_warning_and_hint_as_sub_rows(self) -> None:
+        message = "Permission denied reading plist: /Library/Preferences/x.plist"
+        outcomes = {
+            "preferences": ScannerOutcome(
+                name="preferences",
+                status=ScannerStatus.WARNING,
+                elapsed=1.2,
+                warnings=(message,),
+            )
+        }
+
+        # wide console avoids line-wrapping the hint, so substring checks are exact
+        text = _render_table(outcomes, ["preferences"], width=200)
+        lines = text.splitlines()
+        main_row = next(line for line in lines if "preferences" in line)
+
+        assert "1 warning(s)" in main_row
+        assert message not in main_row
+        assert message in text
+        assert "Grant Full Disk Access" in text
+
+
+class TestBuildScanTableError:
+    def test_error_row_shows_short_detail_and_full_message_once_in_sub_row(self) -> None:
+        message = "RuntimeError: boom failure"
+        outcomes = {
+            "homebrew": ScannerOutcome(
+                name="homebrew",
+                status=ScannerStatus.ERROR,
+                elapsed=0.5,
+                error=message,
+            )
+        }
+
+        text = _render_table(outcomes, ["homebrew"], width=200)
+        lines = text.splitlines()
+        main_row = next(line for line in lines if "homebrew" in line)
+
+        assert "error" in main_row
+        assert message not in main_row
+        assert text.count(message) == 1
+
+
+class TestBuildScanTableSkipped:
+    def test_skipped_row_renders_distinctly_from_success_row(self) -> None:
+        outcomes = {
+            "docker": ScannerOutcome(name="docker", status=ScannerStatus.SKIPPED, elapsed=0.0),
+            "shell": ScannerOutcome(name="shell", status=ScannerStatus.SUCCESS, elapsed=0.1),
+        }
+
+        text = _render_table(outcomes, ["docker", "shell"])
+        lines = text.splitlines()
+        docker_row = next(line for line in lines if "docker" in line)
+        shell_row = next(line for line in lines if "shell" in line)
+
+        skipped_icon, _ = _status_icon(ScannerStatus.SKIPPED)
+        success_icon, _ = _status_icon(ScannerStatus.SUCCESS)
+        assert skipped_icon in docker_row
+        assert success_icon in shell_row
+        assert skipped_icon != success_icon
+
+
+# ---------------------------------------------------------------------------
+# Live table integration: summary tally and general warnings
+# ---------------------------------------------------------------------------
+
+
+class TestScanCommandSummaryTally:
+    def test_summary_line_includes_status_tally(self) -> None:
+        runner = CliRunner()
+        state = _make_state()
+
+        async def fake_run_scan(
+            scanners: list[str] | None = None,
+            progress_callback: Any = None,
+            log_handler: Any = None,
+        ) -> SystemState:
+            if progress_callback is not None:
+                progress_callback(ScannerOutcome(name="shell", status=ScannerStatus.SUCCESS, elapsed=0.1))
+                progress_callback(
+                    ScannerOutcome(
+                        name="preferences",
+                        status=ScannerStatus.WARNING,
+                        elapsed=0.2,
+                        warnings=("some warning",),
+                    )
+                )
+            return state
+
+        with patch("mac2nix.cli.run_scan", new=fake_run_scan):
+            result = runner.invoke(main, ["scan"])
+
+        assert result.exit_code == 0
+        assert "1 success" in result.output
+        assert "1 warning" in result.output
+
+
+class TestScanCommandGeneralWarnings:
+    def test_unattributed_warnings_shown_as_general_warnings_section(self) -> None:
+        runner = CliRunner()
+        state = _make_state()
+        unattributed_message = "prefetch warning: system_profiler slow to respond"
+
+        async def fake_run_scan(
+            scanners: list[str] | None = None,
+            progress_callback: Any = None,
+            log_handler: Any = None,
+        ) -> SystemState:
+            if log_handler is not None:
+                log_handler.unattributed.append(unattributed_message)
+            return state
+
+        with patch("mac2nix.cli.run_scan", new=fake_run_scan):
+            result = runner.invoke(main, ["scan"])
+
+        assert result.exit_code == 0
+        assert "General warnings" in result.output
+        assert unattributed_message in result.output
