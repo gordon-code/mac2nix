@@ -1,5 +1,8 @@
 """Tests for non_defaults_to_nix mapping."""
 
+import pytest
+
+from mac2nix.mappings import non_defaults_to_nix
 from mac2nix.mappings.non_defaults_to_nix import (
     ENVIRONMENT_MAP,
     LAUNCHD_KEYS_TO_DROP,
@@ -72,6 +75,34 @@ class TestLaunchdLabelToService:
 
     def test_all_patterns_are_registered(self) -> None:
         assert len(LAUNCHD_LABEL_TO_SERVICE) >= 25
+
+    def test_first_matching_pattern_wins_when_patterns_overlap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LAUNCHD_LABEL_TO_SERVICE's own comment states specific patterns must be listed
+        before broad wildcards so the more precise match is tried first. No pair of
+        patterns in the production table currently overlaps in a way that would expose an
+        ordering bug, so this locks in get_launchd_service's underlying iteration-order
+        semantics directly, independent of the current (accidentally non-conflicting) data.
+        """
+        monkeypatch.setattr(
+            non_defaults_to_nix,
+            "LAUNCHD_LABEL_TO_SERVICE",
+            [
+                ("com.example.specific.exact", "services.specific"),
+                ("*example*", "services.broad-fallback"),
+            ],
+        )
+        assert get_launchd_service("com.example.specific.exact") == "services.specific"
+        assert get_launchd_service("com.example.other") == "services.broad-fallback"
+
+        monkeypatch.setattr(
+            non_defaults_to_nix,
+            "LAUNCHD_LABEL_TO_SERVICE",
+            [
+                ("*example*", "services.broad-fallback"),
+                ("com.example.specific.exact", "services.specific"),
+            ],
+        )
+        assert get_launchd_service("com.example.specific.exact") == "services.broad-fallback"
 
 
 class TestLaunchdKeysToDrop:

@@ -93,9 +93,55 @@ _ALF_KEY_ALIASES: dict[str, str] = {
 }
 
 
+# Mirrors ephemeral_filter.py's camelCase/non-alnum tokenizer, duplicated locally so this
+# module's only dependency on ephemeral_filter stays its public is_ephemeral() API.
+_CAMEL_TOKEN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A-Z0-9]+")
+_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]+")
+
+# Bare-word complement to SENSITIVE_KEY_PATTERNS' underscore-delimited substrings: catches
+# the same concepts split across camelCase boundaries or plain-text delimiters instead of
+# underscores (e.g. "authToken=...", "Authorization: Bearer ..."). "key" is deliberately
+# excluded -- unlike the other words here, it's an overloaded, common word in identifiers
+# that have nothing to do with secrets (sort key, primary key, hot key, dictionary key,
+# "SomeUnknownKey" as a generic placeholder name, a preference literally named "Key"), and
+# no tokenization heuristic reliably separates "ApiKey" from "PrimaryKey" or "SortKey".
+# SENSITIVE_KEY_PATTERNS' underscore-anchored "_KEY" already covers the safe SNAKE_CASE
+# form. Bare high-entropy secrets with no accompanying keyword at all are not detectable by
+# any keyword list and are out of scope here.
+_SENSITIVE_TOKENS: frozenset[str] = frozenset(
+    {"token", "secret", "password", "credential", "auth", "passphrase", "bearer"}
+)
+
+
+def _tokenize(text: str) -> list[str]:
+    tokens: list[str] = []
+    for segment in _NON_ALNUM_RE.split(text):
+        if segment:
+            tokens.extend(match.lower() for match in _CAMEL_TOKEN_RE.findall(segment))
+    return tokens
+
+
 def _contains_sensitive_pattern(text: str) -> bool:
     upper = text.upper()
-    return any(pattern in upper for pattern in SENSITIVE_KEY_PATTERNS)
+    if any(pattern in upper for pattern in SENSITIVE_KEY_PATTERNS):
+        return True
+    return any(token in _SENSITIVE_TOKENS for token in _tokenize(text))
+
+
+def _value_contains_sensitive_pattern(value: Any) -> bool:
+    """Recursively check a (possibly nested) preference value for a sensitive pattern.
+
+    PreferenceValue permits arbitrarily nested dict/list structures (e.g. a plist value
+    that is itself a dict with a "refresh_token" key) -- a flat top-level check would miss
+    those entirely.
+    """
+    if isinstance(value, str):
+        return _contains_sensitive_pattern(value)
+    if isinstance(value, dict):
+        return any(_contains_sensitive_pattern(k) or _value_contains_sensitive_pattern(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_value_contains_sensitive_pattern(item) for item in value)
+    return False
 
 
 def _redact_sensitive_dict_entries(entries: dict[str, str]) -> tuple[dict[str, str], bool]:
@@ -139,7 +185,7 @@ def _preferences_tier2_destination(domain: PreferencesDomain) -> str:
     cfprefsd-only domains (source_path is None) default to CustomUserPreferences --
     most such domains reflect per-user cached settings with no system-wide plist.
     """
-    if domain.source_path is not None and not str(domain.source_path).startswith(str(Path.home())):
+    if domain.source_path is not None and not domain.source_path.is_relative_to(Path.home()):
         return "CustomSystemPreferences"
     return "CustomUserPreferences"
 
@@ -148,13 +194,13 @@ def _classify_preference_precheck(
     domain: PreferencesDomain, key: str, value: PreferenceValue
 ) -> ClassificationResult | None:
     """SEC-1/SEC-3 gating checks plus ephemeral-noise filtering, run before any tier routing."""
-    if _contains_sensitive_pattern(key):
+    if _contains_sensitive_pattern(key) or _value_contains_sensitive_pattern(value):
         return ClassificationResult(
             tier=ClassificationTier.MANUAL_REPORT,
             destination=f"manual report: key '{key}' in domain '{domain.domain_name}' matches a sensitive pattern",
             metadata={
                 "potentially_sensitive": True,
-                "reason": "key name matches sensitive pattern",
+                "reason": "key or value matches a sensitive pattern",
                 "domain": domain.domain_name,
                 "key": key,
                 "value": "***REDACTED***",
@@ -214,7 +260,10 @@ def classify_preference(domain: PreferencesDomain, key: str, value: PreferenceVa
         if tier_override is None:
             metadata: dict[str, Any] = {"nix_type": option.nix_type}
             if conditions:
-                metadata["conditions"] = conditions
+                # Deep-copy: `conditions` is the same dict object stored in the
+                # module-level DEFAULTS_TO_NIX table -- mutating this result's
+                # metadata in place would otherwise corrupt every future lookup.
+                metadata["conditions"] = copy.deepcopy(conditions)
             return ClassificationResult(
                 tier=ClassificationTier.NATIVE,
                 destination=option.nix_path,

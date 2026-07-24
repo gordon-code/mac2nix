@@ -16,6 +16,7 @@ from mac2nix.mappings.classifier import (
     classify_shell_setting,
     classify_system_setting,
 )
+from mac2nix.mappings.defaults_to_nix import get_nix_option
 from mac2nix.models.application import AppSource, BrewFormula, InstalledApp
 from mac2nix.models.files import DotfileEntry, DotfileManager, FontEntry, FontSource
 from mac2nix.models.preferences import PreferencesDomain
@@ -60,6 +61,25 @@ class TestClassifyPreferenceTierOverride:
         assert result.metadata["native_nix_path_available"] == "system.defaults.dock.persistent-apps"
 
 
+class TestClassifyPreferenceConditionsMetadata:
+    def test_conditions_metadata_is_deep_copied_not_shared_with_defaults_to_nix_table(self) -> None:
+        """A shallow reference would let mutating one result's metadata corrupt the
+        shared DEFAULTS_TO_NIX table for every future lookup of the same option.
+        """
+        domain = _domain("com.apple.finder", {"NewWindowTargetPath": "/Users/foo"})
+        result = classify_preference(domain, "NewWindowTargetPath", "/Users/foo")
+        assert result.tier == ClassificationTier.NATIVE
+        assert result.metadata is not None
+        conditions = result.metadata["conditions"]
+        assert conditions == {"requires": {"NewWindowTarget": "Other"}}
+
+        conditions["requires"]["NewWindowTarget"] = "mutated"
+
+        option = get_nix_option("com.apple.finder", "NewWindowTargetPath")
+        assert option is not None
+        assert option.conditions == {"requires": {"NewWindowTarget": "Other"}}
+
+
 class TestClassifyPreferenceUnmappedKey:
     def test_unmapped_key_in_user_domain_routes_to_custom_user_preferences(self) -> None:
         domain = _domain(
@@ -87,6 +107,16 @@ class TestClassifyPreferenceUnmappedKey:
         assert result.tier == ClassificationTier.CUSTOM_PREFS
         assert result.destination == "CustomUserPreferences"
 
+    def test_sibling_directory_sharing_home_string_prefix_is_not_misclassified_as_user(self) -> None:
+        """A naive str.startswith(home) check would treat /Users/<home-name>X/... as
+        under $HOME purely because of the shared string prefix, not a real path boundary.
+        """
+        sibling = Path.home().parent / (Path.home().name + "X") / "Library/Preferences/com.example.someapp.plist"
+        domain = _domain("com.example.someapp", {"SomeSetting": "value"}, source_path=sibling)
+        result = classify_preference(domain, "SomeSetting", "value")
+        assert result.tier == ClassificationTier.CUSTOM_PREFS
+        assert result.destination == "CustomSystemPreferences"
+
 
 class TestClassifyPreferenceSensitiveKeyRedaction:
     def test_key_matching_sensitive_pattern_routes_to_manual_report_redacted(self) -> None:
@@ -113,6 +143,59 @@ class TestClassifyPreferenceSensitiveKeyRedaction:
             or (result.metadata or {}).get("potentially_sensitive") is not True
         )
 
+    def test_bare_or_compound_key_word_is_not_redacted(self) -> None:
+        """ "Key" (bare or as part of a compound identifier) must not be flagged on its
+        own -- it's an overloaded word in non-sensitive identifiers too (sort key, primary
+        key, a generic placeholder name like "SomeUnknownKey"), unlike "token"/"secret"/
+        "password"/etc. SENSITIVE_KEY_PATTERNS' underscore-anchored "_KEY" still covers the
+        unambiguous SNAKE_CASE form (e.g. "API_KEY").
+        """
+        for key in ("Key", "SomeUnknownKey", "ApiKey", "PrimaryKey"):
+            domain = _domain("com.example.someapp", {key: 1})
+            result = classify_preference(domain, key, 1)
+            assert (
+                result.tier != ClassificationTier.MANUAL_REPORT
+                or (result.metadata or {}).get("potentially_sensitive") is not True
+            ), f"{key!r} should not be flagged as sensitive"
+
+    def test_sensitive_value_with_innocuous_key_is_redacted(self) -> None:
+        """SEC-1 must check the value, not just the key -- credentials routinely appear
+        inline in values under a generic key name.
+        """
+        domain = _domain("com.example.someapp", {"LastRequestLog": "Authorization: Bearer ghp_abc123xyz"})
+        result = classify_preference(domain, "LastRequestLog", "Authorization: Bearer ghp_abc123xyz")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.metadata is not None
+        assert result.metadata["value"] == "***REDACTED***"
+
+    def test_camelcase_compound_word_is_redacted(self) -> None:
+        domain = _domain("com.example.someapp", {"authToken": "sk-live-abc123"})
+        result = classify_preference(domain, "authToken", "sk-live-abc123")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+
+    def test_sensitive_value_nested_one_level_in_dict_is_redacted(self) -> None:
+        """A nested credential must not be invisible to the gate just because it sits
+        one level inside a dict-valued preference rather than at the top level.
+        """
+        domain = _domain("com.example.someapp", {"AccountState": {"username": "alice", "refresh_token": "sk-live"}})
+        result = classify_preference(domain, "AccountState", {"username": "alice", "refresh_token": "sk-live"})
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.metadata is not None
+        assert result.metadata["value"] == "***REDACTED***"
+
+    def test_sensitive_value_nested_in_list_is_redacted(self) -> None:
+        domain = _domain("com.example.someapp", {"History": [{"note": "ok"}, {"password": "hunter2"}]})
+        result = classify_preference(domain, "History", [{"note": "ok"}, {"password": "hunter2"}])
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+
+    def test_non_sensitive_nested_dict_is_not_redacted(self) -> None:
+        domain = _domain("com.example.someapp", {"AccountState": {"username": "alice", "displayName": "Alice"}})
+        result = classify_preference(domain, "AccountState", {"username": "alice", "displayName": "Alice"})
+        assert (
+            result.tier != ClassificationTier.MANUAL_REPORT
+            or (result.metadata or {}).get("potentially_sensitive") is not True
+        )
+
 
 class TestClassifyPreferenceBinarySentinel:
     def test_binary_sentinel_routes_to_activation_script_not_dropped(self) -> None:
@@ -134,6 +217,18 @@ class TestClassifyPreferenceBinarySentinel:
         domain = _domain("com.example.someapp", {"Description": "128 bytes"})
         result = classify_preference(domain, "Description", "128 bytes")
         assert result.tier != ClassificationTier.ACTIVATION_SCRIPT
+
+    def test_sensitive_key_precheck_wins_over_binary_sentinel(self) -> None:
+        """The sensitive-key check must run before the binary-sentinel check --
+        otherwise a credential stored as a plist <data> blob under a sensitive-looking
+        key would leak into an ACTIVATION_SCRIPT's metadata instead of being redacted.
+        """
+        domain = _domain("com.example.someapp", {"API_TOKEN": "<data:64 bytes>"})
+        result = classify_preference(domain, "API_TOKEN", "<data:64 bytes>")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.metadata is not None
+        assert result.metadata["potentially_sensitive"] is True
+        assert result.metadata["value"] == "***REDACTED***"
 
 
 class TestClassifyPreferenceEphemeralSkip:
@@ -342,6 +437,22 @@ class TestClassifyBrewFormula:
         assert result.tier == ClassificationTier.NATIVE
         assert result.metadata is not None
         assert result.metadata["hm_module_available"] == "programs.git"
+
+    def test_formula_with_note_gets_metadata_note(self) -> None:
+        formula = BrewFormula(name="docker")
+        result = classify_brew_formula(formula)
+        assert result.tier == ClassificationTier.NATIVE
+        assert result.nix_path == "pkgs.docker-client"
+        assert result.metadata is not None
+        assert result.metadata["note"] == (
+            "Full pkgs.docker is Linux-only; docker-client is the Darwin client-only equivalent"
+        )
+
+    def test_formula_without_note_has_no_note_key(self) -> None:
+        formula = BrewFormula(name="node")
+        result = classify_brew_formula(formula)
+        assert result.metadata is not None
+        assert "note" not in result.metadata
 
 
 class TestClassifyFont:

@@ -118,6 +118,8 @@ APP_TO_PACKAGE: dict[str, AppClassification] = {
     "alt-tab": AppClassification("cask", "alt-tab"),
     "hiddenbar": AppClassification("cask", "hiddenbar"),
     "keepingyouawake": AppClassification("cask", "keepingyouawake"),
+    "linear-linear": AppClassification("cask", "linear-linear"),
+    "jordanbaird-ice": AppClassification("cask", "jordanbaird-ice"),
     # appstore (Mac App Store exclusive)
     "xcode": AppClassification("appstore", "Xcode"),
     "bear": AppClassification("appstore", "Bear"),

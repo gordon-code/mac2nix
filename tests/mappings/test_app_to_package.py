@@ -24,9 +24,17 @@ class TestNormalizeAppName:
 
     def test_linear_gotcha(self) -> None:
         assert normalize_app_name("Linear.app") == "linear-linear"
+        classification = classify_app("Linear.app")
+        assert classification is not None
+        assert classification.source == "cask"
+        assert classification.package_name == "linear-linear"
 
     def test_ice_gotcha(self) -> None:
         assert normalize_app_name("Ice.app") == "jordanbaird-ice"
+        classification = classify_app("Ice.app")
+        assert classification is not None
+        assert classification.source == "cask"
+        assert classification.package_name == "jordanbaird-ice"
 
     def test_parallels_desktop_gotcha(self) -> None:
         assert normalize_app_name("Parallels Desktop.app") == "parallels"

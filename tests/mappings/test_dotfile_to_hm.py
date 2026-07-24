@@ -73,3 +73,11 @@ class TestDotfileToHm:
     def test_unrecognized_path_returns_none(self) -> None:
         assert get_hm_program("~/.config/does-not-exist/config.toml") is None
         assert get_hm_program("/some/unrelated/path") is None
+
+    def test_home_directory_itself_returns_none(self, tmp_path: Path) -> None:
+        """The home directory itself normalizes to "~", which is never a DOTFILE_TO_HM
+        key -- included for completeness of the normalization path, not because this is
+        a realistic scanner input.
+        """
+        with patch("mac2nix.mappings.dotfile_to_hm.Path.home", return_value=tmp_path):
+            assert get_hm_program(tmp_path) is None
