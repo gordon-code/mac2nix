@@ -70,6 +70,19 @@ class TestRunCommand:
         assert result.returncode == 1
         assert any("1" in r.message and "boom" in r.message for r in caplog.records)
 
+    def test_run_command_no_warning_on_nonzero_exit_when_disabled(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/false"),
+            patch("mac2nix.scanners._utils.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(args=["false"], returncode=1, stdout="", stderr="boom")
+            result = run_command(["false"], warn_on_nonzero=False)
+
+        assert result is not None
+        assert result.returncode == 1
+        assert caplog.records == []
+
     def test_run_command_file_not_found(self) -> None:
         with (
             patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/gone"),

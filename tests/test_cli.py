@@ -344,6 +344,25 @@ class TestBuildScanTableError:
         assert message not in main_row
         assert text.count(message) == 1
 
+    def test_error_row_with_warnings_shows_both_warnings_before_error(self) -> None:
+        warning_message = "some warning"
+        error_message = "RuntimeError: boom"
+        outcomes = {
+            "homebrew": ScannerOutcome(
+                name="homebrew",
+                status=ScannerStatus.ERROR,
+                elapsed=0.5,
+                warnings=(warning_message,),
+                error=error_message,
+            )
+        }
+
+        text = _render_table(outcomes, ["homebrew"], width=200)
+
+        assert warning_message in text
+        assert error_message in text
+        assert text.index(warning_message) < text.index(error_message)
+
 
 class TestBuildScanTableSkipped:
     def test_skipped_row_renders_distinctly_from_success_row(self) -> None:

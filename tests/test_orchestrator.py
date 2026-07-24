@@ -554,6 +554,49 @@ class TestOutcomeClassification:
         assert outcome.error is not None
         assert "RuntimeError: boom" in outcome.error
 
+    def test_crash_log_is_attributed_not_unattributed(self) -> None:
+        """The logger.exception() call in the except block must fire while
+        `_current_scanner` is still set, so it lands on the scanner's own
+        outcome rather than in `log_handler.unattributed`."""
+
+        class _CrashingScanner:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            @property
+            def name(self) -> str:
+                return "_fake_crash"
+
+            def is_available(self) -> bool:
+                return True
+
+            def scan(self) -> Any:
+                msg = "boom"
+                raise RuntimeError(msg)
+
+        registry: dict[str, type] = {"_fake_crash": _CrashingScanner}
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome = outcomes["_fake_crash"]
+        assert outcome.status == ScannerStatus.ERROR
+        assert outcome.error is not None
+        assert any("boom" in warning for warning in outcome.warnings)
+        assert log_handler.unattributed == []
+
     def test_outcome_skipped_for_unavailable_scanner(self) -> None:
         registry = {"_fake_skip": _make_minimal_scanner("_fake_skip", _FakeResult(), available=False)}
         outcomes: dict[str, ScannerOutcome] = {}

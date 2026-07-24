@@ -739,6 +739,30 @@ class TestNpmGlobalDetection:
         assert len(result.packages) == 1
         assert result.packages[0].name == "eslint"
 
+    def test_list_command_disables_warn_on_nonzero(self, cmd_result) -> None:
+        """npm's non-zero-exit-on-peer-warnings is a known, benign case — the
+        list call must opt out of run_command's default WARNING log so it
+        doesn't falsely flag the scanner as ScannerStatus.WARNING."""
+        calls: list[tuple[tuple, dict]] = []
+
+        def side_effect(*args, **kwargs):
+            calls.append((args, kwargs))
+            cmd = args[0]
+            if cmd == ["npm", "--version"]:
+                return cmd_result("11.12.1\n")
+            if "list" in cmd:
+                return cmd_result(json.dumps({"dependencies": {}}))
+            return None
+
+        with (
+            patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/local/bin/npm"),
+            patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+        ):
+            PackageManagersScanner()._detect_npm_global()
+
+        list_call = next(call for call in calls if call[0][0] == ["npm", "list", "-g", "--json", "--depth=0"])
+        assert list_call[1].get("warn_on_nonzero") is False
+
 
 class TestGoDetection:
     def test_not_present(self) -> None:

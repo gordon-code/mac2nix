@@ -352,7 +352,7 @@ class PackageManagersScanner(BaseScannerPlugin):
 
     @staticmethod
     def _get_npm_global_packages() -> list[LanguagePackage]:
-        result = run_command(["npm", "list", "-g", "--json", "--depth=0"], timeout=15)
+        result = run_command(["npm", "list", "-g", "--json", "--depth=0"], timeout=15, warn_on_nonzero=False)
         if result is None:
             return []
         if result.returncode != 0 and not result.stdout.strip():

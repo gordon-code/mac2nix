@@ -87,30 +87,34 @@ async def _run_scanner_async(
     warnings: tuple[str, ...] = ()
     error: str | None = None
     try:
-        scanner = scanner_cls(**kwargs)
-        if not scanner.is_available():
-            logger.info("Scanner '%s' not available — skipping", scanner_name)
-            status = ScannerStatus.SKIPPED
-            return scanner_name, None
-
+        # Covers the whole lifecycle (construction, is_available, scan, and the
+        # exception handler below) so any WARNING+ log emitted anywhere in it is
+        # attributed to this scanner, not left `unattributed` once the block exits.
         with attribute_to_scanner(scanner_name):
-            result: BaseModel = await asyncio.to_thread(scanner.scan)
-        logger.debug("Scanner '%s' completed", scanner_name)
+            try:
+                scanner = scanner_cls(**kwargs)
+                if not scanner.is_available():
+                    logger.info("Scanner '%s' not available — skipping", scanner_name)
+                    status = ScannerStatus.SKIPPED
+                    return scanner_name, None
 
-        records = log_handler.pop_records(scanner_name) if log_handler is not None else []
-        if records:
-            status = ScannerStatus.WARNING
-            warnings = tuple(records)
-        else:
-            status = ScannerStatus.SUCCESS
-        return scanner_name, result
-    except Exception as exc:
-        logger.exception("Scanner '%s' raised an exception", scanner_name)
-        status = ScannerStatus.ERROR
-        error = f"{type(exc).__name__}: {exc}"
-        if log_handler is not None:
-            warnings = tuple(log_handler.pop_records(scanner_name))
-        return scanner_name, None
+                result: BaseModel = await asyncio.to_thread(scanner.scan)
+                logger.debug("Scanner '%s' completed", scanner_name)
+
+                records = log_handler.pop_records(scanner_name) if log_handler is not None else []
+                if records:
+                    status = ScannerStatus.WARNING
+                    warnings = tuple(records)
+                else:
+                    status = ScannerStatus.SUCCESS
+                return scanner_name, result
+            except Exception as exc:
+                logger.exception("Scanner '%s' raised an exception", scanner_name)
+                status = ScannerStatus.ERROR
+                error = f"{type(exc).__name__}: {exc}"
+                if log_handler is not None:
+                    warnings = tuple(log_handler.pop_records(scanner_name))
+                return scanner_name, None
     finally:
         elapsed = time.monotonic() - start
         outcome = ScannerOutcome(

@@ -329,11 +329,16 @@ def run_command(
     cmd: list[str],
     *,
     timeout: int = 30,
+    warn_on_nonzero: bool = True,
 ) -> subprocess.CompletedProcess[str] | None:
     """Run a subprocess command safely.
 
     Validates that the executable exists before running. Never uses shell=True.
     Returns None if the executable is not found or on timeout.
+
+    Set warn_on_nonzero=False for commands known to exit non-zero in benign
+    cases (e.g. npm's peer-dependency warnings) so callers can inspect stdout
+    themselves without generating a false-alarm WARNING log.
     """
     executable = cmd[0]
     if shutil.which(executable) is None:
@@ -343,7 +348,7 @@ def run_command(
     logger.debug("Running command: %s", cmd)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)  # noqa: S603
-        if result.returncode != 0:
+        if warn_on_nonzero and result.returncode != 0:
             logger.warning("Command exited %d: %s\nstderr: %s", result.returncode, cmd, result.stderr.strip())
         return result
     except subprocess.TimeoutExpired:
