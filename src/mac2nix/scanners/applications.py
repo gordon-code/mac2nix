@@ -274,12 +274,12 @@ class ApplicationsScanner(BaseScannerPlugin):
         clt_version: str | None = None
 
         # xcode-select -p
-        result = run_command(["xcode-select", "-p"])
+        result = run_command(["xcode-select", "-p"], warn_on_nonzero=False)
         if result is not None and result.returncode == 0:
             xcode_path = result.stdout.strip() or None
 
         # xcodebuild -version (only if full Xcode is installed)
-        result = run_command(["xcodebuild", "-version"], timeout=10)
+        result = run_command(["xcodebuild", "-version"], timeout=10, warn_on_nonzero=False)
         if result is not None and result.returncode == 0:
             for line in result.stdout.splitlines():
                 if line.startswith("Xcode"):
@@ -287,7 +287,7 @@ class ApplicationsScanner(BaseScannerPlugin):
                     break
 
         # CLT version via pkgutil
-        result = run_command(["pkgutil", "--pkg-info=com.apple.pkg.CLTools_Executables"])
+        result = run_command(["pkgutil", "--pkg-info=com.apple.pkg.CLTools_Executables"], warn_on_nonzero=False)
         if result is not None and result.returncode == 0:
             for line in result.stdout.splitlines():
                 if line.startswith("version:"):

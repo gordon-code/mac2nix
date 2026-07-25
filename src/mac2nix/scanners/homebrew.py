@@ -73,7 +73,7 @@ class HomebrewScanner(BaseScannerPlugin):
             # executable disappeared mid-run) -- nothing more to add here.
             return taps, formulae, casks, mas_apps
         if result.returncode != 0:
-            # run_command() already logged the exit code and stderr (Step 1) -- add
+            # run_command() already logged the exit code and stderr -- add
             # homebrew-specific framing only.
             logger.warning("Unable to enumerate Homebrew state via 'brew bundle dump'")
             return taps, formulae, casks, mas_apps
@@ -113,7 +113,7 @@ class HomebrewScanner(BaseScannerPlugin):
 
     def _get_versions(self) -> dict[str, str]:
         """Parse brew list --versions output into name->version dict."""
-        result = run_command(["brew", "list", "--versions"])
+        result = run_command(["brew", "list", "--versions"], warn_on_nonzero=False)
         if result is None:
             return {}
         # Parse stdout even on non-zero exit — brew may report errors about

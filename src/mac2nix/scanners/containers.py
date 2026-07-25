@@ -137,7 +137,7 @@ class ContainersScanner(BaseScannerPlugin):
                     break
 
         running = False
-        status_result = run_command(["colima", "status"])
+        status_result = run_command(["colima", "status"], warn_on_nonzero=False)
         if status_result and status_result.returncode == 0:
             running = True
 
@@ -167,7 +167,7 @@ class ContainersScanner(BaseScannerPlugin):
             if result and result.returncode == 0:
                 version = result.stdout.strip().split()[-1] if result.stdout.strip() else None
 
-            status_result = run_command(["orbctl", "status"])
+            status_result = run_command(["orbctl", "status"], warn_on_nonzero=False)
             if status_result and status_result.returncode == 0:
                 running = True
 

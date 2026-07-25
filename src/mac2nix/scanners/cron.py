@@ -39,7 +39,7 @@ class CronScanner(BaseScannerPlugin):
         )
 
     def _get_cron_entries(self) -> tuple[list[CronEntry], dict[str, str]]:
-        result = run_command(["crontab", "-l"])
+        result = run_command(["crontab", "-l"], warn_on_nonzero=False)
         if result is None:
             return [], {}
         # crontab -l returns exit code 1 with 'no crontab for user' — not an error
