@@ -30,17 +30,18 @@ _STATUS_ICONS: dict[ScannerStatus, tuple[str, str]] = {
     ScannerStatus.SKIPPED: ("⊘", "dim"),
 }
 
-_TALLY_LABELS: dict[ScannerStatus, str] = {
-    ScannerStatus.SUCCESS: "success",
-    ScannerStatus.WARNING: "warning",
-    ScannerStatus.ERROR: "error",
-    ScannerStatus.SKIPPED: "skipped",
-}
-
 
 def _status_icon(status: ScannerStatus) -> tuple[str, str]:
     """Return (icon, style) for a scanner's status."""
     return _STATUS_ICONS[status]
+
+
+def _add_message_row(table: Table, message: str) -> None:
+    """Add a sub-row for a warning/error message, plus a remediation hint if one applies."""
+    table.add_row("", Text(f"  ↳ {message}", style="dim"), "", "")
+    hint = get_remediation_hint(message)
+    if hint is not None:
+        table.add_row("", Text(f"     → {hint}", style="dim italic"), "", "")
 
 
 def _build_scan_table(outcomes: dict[str, ScannerOutcome], order: Sequence[str]) -> Table:
@@ -66,18 +67,11 @@ def _build_scan_table(outcomes: dict[str, ScannerOutcome], order: Sequence[str])
 
         table.add_row(Text(icon, style=style), name, f"{outcome.elapsed:.1f}s", detail)
 
-        if outcome.status in (ScannerStatus.WARNING, ScannerStatus.ERROR) and outcome.warnings:
+        if outcome.status in (ScannerStatus.WARNING, ScannerStatus.ERROR):
             for warning in outcome.warnings:
-                table.add_row("", Text(f"  ↳ {warning}", style="dim"), "", "")
-                hint = get_remediation_hint(warning)
-                if hint is not None:
-                    table.add_row("", Text(f"     → {hint}", style="dim italic"), "", "")
-
-        if outcome.status is ScannerStatus.ERROR and outcome.error is not None:
-            table.add_row("", Text(f"  ↳ {outcome.error}", style="dim"), "", "")
-            hint = get_remediation_hint(outcome.error)
-            if hint is not None:
-                table.add_row("", Text(f"     → {hint}", style="dim italic"), "", "")
+                _add_message_row(table, warning)
+            if outcome.status is ScannerStatus.ERROR and outcome.error is not None:
+                _add_message_row(table, outcome.error)
 
     return table
 
@@ -157,25 +151,20 @@ def scan(output: Path | None, selected_scanners: tuple[str, ...]) -> None:
     for outcome in outcomes.values():
         tally_counts[outcome.status] = tally_counts.get(outcome.status, 0) + 1
     tally = ", ".join(
-        f"{tally_counts[status]} {_TALLY_LABELS[status]}"
+        f"{tally_counts[status]} {status.value}"
         for status in (ScannerStatus.SUCCESS, ScannerStatus.WARNING, ScannerStatus.ERROR, ScannerStatus.SKIPPED)
         if tally_counts.get(status, 0) > 0
     )
 
     json_output = state.to_json()
+    summary = f"Scanned {len(outcomes)} scanner(s) in {elapsed:.1f}s ({tally})"
 
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json_output)
-        click.echo(
-            f"Scanned {len(outcomes)} scanner(s) in {elapsed:.1f}s ({tally}) — wrote {output}",
-            err=True,
-        )
+        click.echo(f"{summary} — wrote {output}", err=True)
     else:
-        click.echo(
-            f"Scanned {len(outcomes)} scanner(s) in {elapsed:.1f}s ({tally})",
-            err=True,
-        )
+        click.echo(summary, err=True)
         click.echo(json_output)
 
 
