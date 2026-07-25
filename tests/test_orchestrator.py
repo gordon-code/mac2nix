@@ -649,6 +649,47 @@ class TestOutcomeClassification:
         assert any("warning from y" in warning for warning in outcome_y.warnings)
         assert not any("warning from x" in warning for warning in outcome_y.warnings)
 
+    def test_crash_error_message_is_sanitized(self) -> None:
+        """Control characters embedded in an exception message must not reach ScannerOutcome.error."""
+
+        class _CrashingScanner:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            @property
+            def name(self) -> str:
+                return "_fake_crash"
+
+            def is_available(self) -> bool:
+                return True
+
+            def scan(self) -> Any:
+                msg = "boom \x1b[2J\x1b[H injected"
+                raise RuntimeError(msg)
+
+        registry: dict[str, type] = {"_fake_crash": _CrashingScanner}
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome = outcomes["_fake_crash"]
+        assert outcome.error is not None
+        assert "\x1b" not in outcome.error
+        assert "boom" in outcome.error
+        assert "injected" in outcome.error
+
     def test_unattributed_prefetch_warning_captured(self) -> None:
         """Warnings logged during the prefetch phase (before any scanner is attributed) land in `.unattributed`."""
 

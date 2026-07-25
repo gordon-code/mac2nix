@@ -129,6 +129,24 @@ class TestCaptureScannerLogsTeardown:
         assert logger.handlers == handlers_before
 
 
+class TestSanitizeForDisplay:
+    def test_strips_ansi_escape_sequence(self) -> None:
+        with capture_scanner_logs() as handler, attribute_to_scanner("fake_a"):
+            logging.getLogger("mac2nix.scanners.fake_a").warning("clear screen: \x1b[2J\x1b[H done")
+
+        records = handler.pop_records("fake_a")
+        assert len(records) == 1
+        assert "\x1b" not in records[0]
+        assert "clear screen: [2J[H done" in records[0]
+
+    def test_preserves_tab_and_newline(self) -> None:
+        with capture_scanner_logs() as handler, attribute_to_scanner("fake_a"):
+            logging.getLogger("mac2nix.scanners.fake_a").warning("col1\tcol2\nline2")
+
+        records = handler.pop_records("fake_a")
+        assert records == ["col1\tcol2\nline2"]
+
+
 class TestGetRemediationHint:
     def test_plist_permission_denied_pattern(self) -> None:
         hint = get_remediation_hint("Permission denied reading plist: /Library/Preferences/x.plist")

@@ -16,7 +16,13 @@ from typing import Any
 from pydantic import BaseModel
 
 from mac2nix.models.system_state import SystemState
-from mac2nix.scan_report import ScannerOutcome, ScannerStatus, _ScannerLogCapture, attribute_to_scanner
+from mac2nix.scan_report import (
+    ScannerOutcome,
+    ScannerStatus,
+    _sanitize_for_display,
+    _ScannerLogCapture,
+    attribute_to_scanner,
+)
 from mac2nix.scanners import get_all_scanners
 from mac2nix.scanners._utils import read_launchd_plists, run_command
 from mac2nix.scanners.audio import AudioScanner
@@ -96,6 +102,8 @@ async def _run_scanner_async(
                 if not scanner.is_available():
                     logger.info("Scanner '%s' not available — skipping", scanner_name)
                     status = ScannerStatus.SKIPPED
+                    if log_handler is not None:
+                        log_handler.pop_records(scanner_name)
                     return scanner_name, None
 
                 result: BaseModel = await asyncio.to_thread(scanner.scan)
@@ -111,7 +119,7 @@ async def _run_scanner_async(
             except Exception as exc:
                 logger.exception("Scanner '%s' raised an exception", scanner_name)
                 status = ScannerStatus.ERROR
-                error = f"{type(exc).__name__}: {exc}"
+                error = _sanitize_for_display(f"{type(exc).__name__}: {exc}")
                 if log_handler is not None:
                     warnings = tuple(log_handler.pop_records(scanner_name))
                 return scanner_name, None

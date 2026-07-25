@@ -31,6 +31,19 @@ class ScannerOutcome:
 
 _current_scanner: ContextVar[str | None] = ContextVar("_current_scanner", default=None)
 
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f]")
+
+
+def _sanitize_for_display(text: str) -> str:
+    """Strip control characters (e.g. ESC, CR) that could inject terminal escape sequences.
+
+    Tab and newline are preserved; every other C0 control character and DEL are
+    removed. Applied to any subprocess-derived or exception-derived text before
+    it reaches the Rich table or click.echo, since neither strips raw bytes.
+    """
+    return _CONTROL_CHAR_RE.sub("", text)
+
+
 _REMEDIATION_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"Permission denied reading plist"),
@@ -55,7 +68,7 @@ class _ScannerLogCapture(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         scanner_name = _current_scanner.get()
-        message = self.format(record)
+        message = _sanitize_for_display(self.format(record))
         with self._lock:
             if scanner_name is None:
                 self.unattributed.append(message)
