@@ -146,6 +146,15 @@ class TestSanitizeForDisplay:
         records = handler.pop_records("fake_a")
         assert records == ["col1\tcol2\nline2"]
 
+    def test_strips_c1_control_character(self) -> None:
+        with capture_scanner_logs() as handler, attribute_to_scanner("fake_a"):
+            logging.getLogger("mac2nix.scanners.fake_a").warning("csi: \x9b2J done")
+
+        records = handler.pop_records("fake_a")
+        assert len(records) == 1
+        assert "\x9b" not in records[0]
+        assert "csi: 2J done" in records[0]
+
 
 class TestGetRemediationHint:
     def test_plist_permission_denied_pattern(self) -> None:

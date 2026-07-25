@@ -31,13 +31,14 @@ class ScannerOutcome:
 
 _current_scanner: ContextVar[str | None] = ContextVar("_current_scanner", default=None)
 
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f]")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f-\x9f]")
 
 
 def _sanitize_for_display(text: str) -> str:
     """Strip control characters (e.g. ESC, CR) that could inject terminal escape sequences.
 
-    Tab and newline are preserved; every other C0 control character and DEL are
+    Tab and newline are preserved; every other C0 control character, DEL, and
+    the C1 control range (U+0080-U+009F, e.g. the 8-bit CSI U+009B) are
     removed. Applied to any subprocess-derived or exception-derived text before
     it reaches the Rich table or click.echo, since neither strips raw bytes.
     """

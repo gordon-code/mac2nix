@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import errno
 import hashlib
 import logging
@@ -270,7 +271,7 @@ def parallel_walk_dirs[T](
                 logger.exception("Failed to process directory: %s", d)
     else:
         with ThreadPoolExecutor(max_workers=min(max_workers, len(dirs))) as pool:
-            futures = {pool.submit(process_fn, d): d for d in dirs}
+            futures = {pool.submit(contextvars.copy_context().run, process_fn, d): d for d in dirs}
             for future in as_completed(futures):
                 directory = futures[future]
                 try:
