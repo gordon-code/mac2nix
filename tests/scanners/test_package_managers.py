@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 from pathlib import Path
 from unittest.mock import patch
 
-from mac2nix.models.package_managers import PackageManagersResult
+from mac2nix.models.package_managers import MacPortsState, PackageManagersResult
 from mac2nix.scanners.package_managers_scanner import PackageManagersScanner
 
 _SCANNER_MODULE = "mac2nix.scanners.package_managers_scanner"
@@ -42,6 +43,29 @@ class TestPackageManagersScanner:
             result = PackageManagersScanner().scan()
         assert result.macports.present is False
         assert result.conda.present is False
+
+    def test_scan_dispatch_propagates_contextvar(self) -> None:
+        """ContextVar set in the calling thread must be visible inside scan()'s
+        detector pool workers (regression test for missing copy_context().run wrapping)."""
+        test_var: ContextVar[str] = ContextVar("test_var", default="default")
+        token = test_var.set("caller-value")
+        captured: list[str] = []
+
+        def fake_macports(_self: PackageManagersScanner) -> MacPortsState:
+            captured.append(test_var.get())
+            return MacPortsState(present=False)
+
+        try:
+            with (
+                patch(f"{_SCANNER_MODULE}.shutil.which", return_value=None),
+                patch.object(Path, "exists", return_value=False),
+                patch.object(PackageManagersScanner, "_detect_macports", fake_macports),
+            ):
+                PackageManagersScanner().scan()
+        finally:
+            test_var.reset(token)
+
+        assert captured == ["caller-value"]
 
 
 class TestMacPortsDetection:
@@ -941,6 +965,38 @@ class TestGoDetection:
 
         assert len(result.packages) == 1
         assert result.packages[0].name == "example.com/tool"
+
+    def test_binary_inspection_propagates_contextvar(self, cmd_result, tmp_path: Path) -> None:
+        """ContextVar set in the calling thread must be visible inside the Go binary
+        inspection pool workers (regression test for missing copy_context().run wrapping)."""
+        go_bin = tmp_path / "go" / "bin"
+        go_bin.mkdir(parents=True)
+        (go_bin / "gopls").write_text("binary")
+
+        test_var: ContextVar[str] = ContextVar("test_var", default="default")
+        token = test_var.set("caller-value")
+        captured: list[str] = []
+
+        def side_effect(cmd, **_kwargs):
+            if cmd == ["go", "version"]:
+                return cmd_result("go version go1.23.0 darwin/arm64\n")
+            if cmd[0] == "go" and "-m" in cmd:
+                captured.append(test_var.get())
+                return cmd_result("gopls: go1.23.0\n\tmod\tgolang.org/x/tools/gopls\tv0.17.1\t(none)\n")
+            return None
+
+        try:
+            with (
+                patch(f"{_SCANNER_MODULE}.shutil.which", return_value="/usr/local/go/bin/go"),
+                patch(f"{_SCANNER_MODULE}.run_command", side_effect=side_effect),
+                patch(f"{_SCANNER_MODULE}.Path.home", return_value=tmp_path),
+                patch.dict("os.environ", {}, clear=True),
+            ):
+                PackageManagersScanner()._detect_go()
+        finally:
+            test_var.reset(token)
+
+        assert captured == ["caller-value"]
 
 
 class TestGemDetection:
