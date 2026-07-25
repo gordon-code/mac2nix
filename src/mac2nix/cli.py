@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -147,13 +148,9 @@ def scan(output: Path | None, selected_scanners: tuple[str, ...]) -> None:
             if hint is not None:
                 click.echo(f"    → {hint}", err=True)
 
-    tally_counts: dict[ScannerStatus, int] = {}
-    for outcome in outcomes.values():
-        tally_counts[outcome.status] = tally_counts.get(outcome.status, 0) + 1
+    tally_counts = Counter(outcome.status for outcome in outcomes.values())
     tally = ", ".join(
-        f"{tally_counts[status]} {status.value}"
-        for status in (ScannerStatus.SUCCESS, ScannerStatus.WARNING, ScannerStatus.ERROR, ScannerStatus.SKIPPED)
-        if tally_counts.get(status, 0) > 0
+        f"{tally_counts[status]} {status.value}" for status in ScannerStatus if tally_counts.get(status, 0) > 0
     )
 
     json_output = state.to_json()
