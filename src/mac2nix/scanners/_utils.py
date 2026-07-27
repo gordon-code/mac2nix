@@ -370,10 +370,15 @@ def read_plist_safe(path: Path) -> dict[str, Any] | list[Any] | None:
         with path.open("rb") as f:
             data = plistlib.load(f)
     except PermissionError as exc:
+        # Per Apple DTS guidance: EACCES means a traditional BSD permission/ACL
+        # denial (e.g. a root-owned, 0600 system file -- Full Disk Access cannot
+        # override Unix file modes). EPERM means the block came from somewhere
+        # else -- TCC, sandboxing, or another security layer -- which Full Disk
+        # Access can actually resolve.
         if exc.errno == errno.EPERM:
-            logger.debug("Skipping TCC-protected plist: %s", path)
+            logger.warning("Permission denied reading plist (TCC-protected): %s", path)
         else:
-            logger.warning("Permission denied reading plist: %s", path)
+            logger.warning("Permission denied reading plist (root-only, not a Full Disk Access issue): %s", path)
         return None
     except (plistlib.InvalidFileException, ValueError, OverflowError):
         # plistlib can't handle NeXTStep-format plists, some newer binary plist

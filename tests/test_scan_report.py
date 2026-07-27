@@ -157,11 +157,21 @@ class TestSanitizeForDisplay:
 
 
 class TestGetRemediationHint:
-    def test_plist_permission_denied_pattern(self) -> None:
-        hint = get_remediation_hint("Permission denied reading plist: /Library/Preferences/x.plist")
+    def test_plist_tcc_protected_pattern_suggests_full_disk_access(self) -> None:
+        hint = get_remediation_hint("Permission denied reading plist (TCC-protected): /Library/Preferences/x.plist")
 
         assert hint is not None
         assert "Full Disk Access" in hint
+
+    def test_plist_root_only_pattern_does_not_suggest_full_disk_access(self) -> None:
+        hint = get_remediation_hint(
+            "Permission denied reading plist (root-only, not a Full Disk Access issue): "
+            "/Library/Preferences/com.apple.apsd.plist"
+        )
+
+        assert hint is not None
+        assert "Grant Full Disk Access" not in hint
+        assert "root" in hint
 
     def test_brew_timeout_message_from_run_command(self) -> None:
         message = "Command timed out after 30s: ['brew', 'bundle', 'dump', '--file=-']"

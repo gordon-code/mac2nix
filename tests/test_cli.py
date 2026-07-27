@@ -303,7 +303,7 @@ class TestBuildScanTableSuccess:
 
 class TestBuildScanTableWarning:
     def test_warning_row_shows_short_detail_with_full_warning_and_hint_as_sub_rows(self) -> None:
-        message = "Permission denied reading plist: /Library/Preferences/x.plist"
+        message = "Permission denied reading plist (TCC-protected): /Library/Preferences/x.plist"
         outcomes = {
             "preferences": ScannerOutcome(
                 name="preferences",
@@ -322,6 +322,55 @@ class TestBuildScanTableWarning:
         assert message not in main_row
         assert message in text
         assert "Grant Full Disk Access" in text
+
+    def test_long_warning_wraps_within_column_instead_of_widening_table(self) -> None:
+        long_message = (
+            "Command exited 1: ['plutil', '-convert', 'xml1', '-o', '-', "
+            "'/Users/example/Library/Preferences/net.screensolutions.something.plist'] "
+            "stderr: Property List error: Unexpected character W at line 1"
+        )
+        outcomes = {
+            "preferences": ScannerOutcome(
+                name="preferences",
+                status=ScannerStatus.WARNING,
+                elapsed=1.2,
+                warnings=(long_message,),
+            )
+        }
+
+        # A console much wider than the column's max_width -- if the column weren't
+        # capped, Rich would render the whole message on one very long line.
+        text = _render_table(outcomes, ["preferences"], width=200)
+        lines = [line for line in text.splitlines() if line.strip()]
+
+        assert not any(len(line) > 120 for line in lines), (
+            "no rendered line should approach the full 200-column console width"
+        )
+        assert not any(long_message in line for line in lines), "the full message must not fit on a single line"
+
+    def test_root_only_permission_warning_does_not_suggest_full_disk_access(self) -> None:
+        message = (
+            "Permission denied reading plist (root-only, not a Full Disk Access issue): "
+            "/Library/Preferences/com.apple.apsd.plist"
+        )
+        outcomes = {
+            "preferences": ScannerOutcome(
+                name="preferences",
+                status=ScannerStatus.WARNING,
+                elapsed=1.2,
+                warnings=(message,),
+            )
+        }
+
+        # Message content may be word-wrapped within the message column's max width
+        # (see test_long_warning_wraps_within_column_instead_of_widening_table), so
+        # check for distinct short fragments rather than the whole string verbatim.
+        text = _render_table(outcomes, ["preferences"], width=200)
+
+        assert "root-only" in text
+        assert "apsd.plist" in text
+        assert "Grant Full Disk Access" not in text
+        assert "owned by root" in text
 
 
 class TestBuildScanTableError:
@@ -415,7 +464,7 @@ class TestScanCommandSummaryTally:
 
         assert result.exit_code == 0
         assert "1 success" in result.output
-        assert "1 warning" in result.output
+        assert "1 completed with warnings" in result.output
 
 
 class TestScanCommandGeneralWarnings:

@@ -47,9 +47,14 @@ def _sanitize_for_display(text: str) -> str:
 
 _REMEDIATION_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
-        re.compile(r"Permission denied reading plist"),
+        re.compile(r"Permission denied reading plist \(TCC-protected\)"),
         "Grant Full Disk Access to your terminal in System Settings → Privacy & "
         "Security → Full Disk Access, then re-run the scan.",
+    ),
+    (
+        re.compile(r"Permission denied reading plist \(root-only"),
+        "This file is owned by root with no read access for other users — this is "
+        "expected macOS behavior, not something Full Disk Access can fix.",
     ),
     (
         re.compile(r"(?=.*brew)(?=.*(?:timed out|bundle dump))", re.IGNORECASE),

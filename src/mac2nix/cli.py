@@ -31,6 +31,15 @@ _STATUS_ICONS: dict[ScannerStatus, tuple[str, str]] = {
     ScannerStatus.SKIPPED: ("⊘", "dim"),
 }
 
+_TALLY_LABELS: dict[ScannerStatus, str] = {
+    ScannerStatus.SUCCESS: "success",
+    ScannerStatus.WARNING: "completed with warnings",
+    ScannerStatus.ERROR: "failed",
+    ScannerStatus.SKIPPED: "skipped",
+}
+
+_MESSAGE_COLUMN_MAX_WIDTH = 88
+
 
 def _status_icon(status: ScannerStatus) -> tuple[str, str]:
     """Return (icon, style) for a scanner's status."""
@@ -49,7 +58,7 @@ def _build_scan_table(outcomes: dict[str, ScannerOutcome], order: Sequence[str])
     """Render one row per scanner in `order`, with sub-rows for warnings/errors."""
     table = Table(box=None, show_header=False, padding=(0, 1))
     table.add_column(width=2, justify="center")
-    table.add_column()
+    table.add_column(max_width=_MESSAGE_COLUMN_MAX_WIDTH, overflow="fold")
     table.add_column(justify="right")
     table.add_column()
 
@@ -150,7 +159,7 @@ def scan(output: Path | None, selected_scanners: tuple[str, ...]) -> None:
 
     tally_counts = Counter(outcome.status for outcome in outcomes.values())
     tally = ", ".join(
-        f"{tally_counts[status]} {status.value}" for status in ScannerStatus if tally_counts.get(status, 0) > 0
+        f"{tally_counts[status]} {_TALLY_LABELS[status]}" for status in ScannerStatus if tally_counts.get(status, 0) > 0
     )
 
     json_output = state.to_json()

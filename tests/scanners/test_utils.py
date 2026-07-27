@@ -1,5 +1,6 @@
 """Tests for scanner utility functions."""
 
+import errno
 import logging
 import plistlib
 import subprocess
@@ -123,14 +124,41 @@ class TestReadPlistSafe:
 
         assert result is None
 
-    def test_read_plist_safe_permission_denied(self, tmp_path: Path) -> None:
+    def test_read_plist_safe_permission_denied_eperm_is_tcc_protected(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         plist_file = tmp_path / "locked.plist"
         plist_file.write_bytes(plistlib.dumps({"key": "value"}))
+        denied = PermissionError("denied")
+        denied.errno = errno.EPERM
 
-        with patch.object(Path, "open", side_effect=PermissionError("denied")):
+        with (
+            patch.object(Path, "open", side_effect=denied),
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
             result = read_plist_safe(plist_file)
 
         assert result is None
+        assert any("TCC-protected" in r.message for r in caplog.records)
+        assert not any("root-only" in r.message for r in caplog.records)
+
+    def test_read_plist_safe_permission_denied_eacces_is_root_only(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        plist_file = tmp_path / "locked.plist"
+        plist_file.write_bytes(plistlib.dumps({"key": "value"}))
+        denied = PermissionError("denied")
+        denied.errno = errno.EACCES
+
+        with (
+            patch.object(Path, "open", side_effect=denied),
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
+            result = read_plist_safe(plist_file)
+
+        assert result is None
+        assert any("root-only" in r.message for r in caplog.records)
+        assert not any("TCC-protected" in r.message for r in caplog.records)
 
     def test_read_plist_safe_invalid_falls_back_to_plutil(self, tmp_path: Path) -> None:
         plist_file = tmp_path / "nextstep.plist"
