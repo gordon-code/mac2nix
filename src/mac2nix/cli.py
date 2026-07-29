@@ -49,8 +49,13 @@ def _message_lines(message: str) -> list[Text]:
 
     Returned as standalone Text objects (not table cells) so they wrap at the
     full console width instead of being squeezed into a narrow shared column.
+    A message with embedded newlines (e.g. a "...\\nstderr: ..." continuation
+    from run_command()) gets each continuation line indented to nest under the
+    first, rather than resetting to the left margin.
     """
-    lines = [Text(f"  ↳ {message}", style="dim")]
+    first, *continuation = message.split("\n")
+    lines = [Text(f"  ↳ {first}", style="dim")]
+    lines.extend(Text(f"     {line}", style="dim") for line in continuation)
     hint = get_remediation_hint(message)
     if hint is not None:
         lines.append(Text(f"     → {hint}", style="dim italic"))

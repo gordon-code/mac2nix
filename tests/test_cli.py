@@ -339,10 +339,15 @@ class TestBuildScanTableWarning:
         }
 
         # Warning text is no longer confined to a narrow shared column, so a console
-        # wide enough for the whole message renders it on one line, unwrapped.
+        # wide enough for each of its lines renders them unwrapped (each embedded
+        # newline still starts a new, separately-indented sub-line -- see
+        # test_stderr_continuation_nests_deeper_than_warning_arrow).
         text = _render_table(outcomes, ["preferences"], width=200)
+        first_line, stderr_line = long_message.split("\n")
 
-        assert long_message in text
+        assert first_line in text
+        assert stderr_line in text
+        assert not any(len(line) > 150 for line in text.splitlines()), "lines shouldn't be forced to wrap"
 
     def test_summary_line_width_is_unaffected_by_warning_length(self) -> None:
         short_outcomes = {"preferences": ScannerOutcome(name="preferences", status=ScannerStatus.SUCCESS, elapsed=1.2)}
@@ -362,6 +367,26 @@ class TestBuildScanTableWarning:
         # A wildly long warning must not pad or widen the scanner's own summary
         # line -- only its dedicated sub-line(s) should grow.
         assert len(long_summary_line) - len(short_summary_line) < 20
+
+    def test_stderr_continuation_nests_deeper_than_warning_arrow(self) -> None:
+        message = 'Warning: "plutil -convert xml1" failed (exit 1)\nstderr: Unexpected character W'
+        outcomes = {
+            "preferences": ScannerOutcome(
+                name="preferences", status=ScannerStatus.WARNING, elapsed=1.2, warnings=(message,)
+            )
+        }
+
+        text = _render_table(outcomes, ["preferences"], width=200)
+        lines = text.splitlines()
+        arrow_line = next(line for line in lines if "↳" in line)
+        stderr_line = next(line for line in lines if "stderr:" in line)
+
+        arrow_indent = len(arrow_line) - len(arrow_line.lstrip())
+        stderr_indent = len(stderr_line) - len(stderr_line.lstrip())
+
+        # The continuation must nest deeper than the "↳" line it belongs to, not
+        # reset to (or past) the left margin.
+        assert stderr_indent > arrow_indent
 
     def test_root_only_permission_warning_does_not_suggest_full_disk_access(self) -> None:
         message = (
