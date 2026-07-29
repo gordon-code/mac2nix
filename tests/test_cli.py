@@ -323,10 +323,10 @@ class TestBuildScanTableWarning:
         assert message in text
         assert "Grant Full Disk Access" in text
 
-    def test_long_warning_wraps_within_column_instead_of_widening_table(self) -> None:
+    def test_long_warning_does_not_wrap_in_a_wide_console(self) -> None:
         long_message = (
-            "Command exited 1: ['plutil', '-convert', 'xml1', '-o', '-', "
-            "'/Users/example/Library/Preferences/net.screensolutions.something.plist'] "
+            'Warning: "plutil -convert xml1 -o - '
+            '/Users/example/Library/Preferences/net.screensolutions.something.plist" failed (exit 1)\n'
             "stderr: Property List error: Unexpected character W at line 1"
         )
         outcomes = {
@@ -338,15 +338,30 @@ class TestBuildScanTableWarning:
             )
         }
 
-        # A console much wider than the column's max_width -- if the column weren't
-        # capped, Rich would render the whole message on one very long line.
+        # Warning text is no longer confined to a narrow shared column, so a console
+        # wide enough for the whole message renders it on one line, unwrapped.
         text = _render_table(outcomes, ["preferences"], width=200)
-        lines = [line for line in text.splitlines() if line.strip()]
 
-        assert not any(len(line) > 120 for line in lines), (
-            "no rendered line should approach the full 200-column console width"
-        )
-        assert not any(long_message in line for line in lines), "the full message must not fit on a single line"
+        assert long_message in text
+
+    def test_summary_line_width_is_unaffected_by_warning_length(self) -> None:
+        short_outcomes = {"preferences": ScannerOutcome(name="preferences", status=ScannerStatus.SUCCESS, elapsed=1.2)}
+        long_message = "x" * 150
+        long_warning_outcomes = {
+            "preferences": ScannerOutcome(
+                name="preferences", status=ScannerStatus.WARNING, elapsed=1.2, warnings=(long_message,)
+            )
+        }
+
+        short_text = _render_table(short_outcomes, ["preferences"], width=200)
+        long_text = _render_table(long_warning_outcomes, ["preferences"], width=200)
+
+        short_summary_line = next(line for line in short_text.splitlines() if "preferences" in line)
+        long_summary_line = next(line for line in long_text.splitlines() if "preferences" in line)
+
+        # A wildly long warning must not pad or widen the scanner's own summary
+        # line -- only its dedicated sub-line(s) should grow.
+        assert len(long_summary_line) - len(short_summary_line) < 20
 
     def test_root_only_permission_warning_does_not_suggest_full_disk_access(self) -> None:
         message = (

@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import click
-from rich.console import Console
+from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
@@ -38,34 +38,48 @@ _TALLY_LABELS: dict[ScannerStatus, str] = {
     ScannerStatus.SKIPPED: "skipped",
 }
 
-_MESSAGE_COLUMN_MAX_WIDTH = 88
-
 
 def _status_icon(status: ScannerStatus) -> tuple[str, str]:
     """Return (icon, style) for a scanner's status."""
     return _STATUS_ICONS[status]
 
 
-def _add_message_row(table: Table, message: str) -> None:
-    """Add a sub-row for a warning/error message, plus a remediation hint if one applies."""
-    table.add_row("", Text(f"  ↳ {message}", style="dim"), "", "")
+def _message_lines(message: str) -> list[Text]:
+    """Render a warning/error message plus its remediation hint (if any).
+
+    Returned as standalone Text objects (not table cells) so they wrap at the
+    full console width instead of being squeezed into a narrow shared column.
+    """
+    lines = [Text(f"  ↳ {message}", style="dim")]
     hint = get_remediation_hint(message)
     if hint is not None:
-        table.add_row("", Text(f"     → {hint}", style="dim italic"), "", "")
+        lines.append(Text(f"     → {hint}", style="dim italic"))
+    return lines
 
 
-def _build_scan_table(outcomes: dict[str, ScannerOutcome], order: Sequence[str]) -> Table:
-    """Render one row per scanner in `order`, with sub-rows for warnings/errors."""
-    table = Table(box=None, show_header=False, padding=(0, 1))
-    table.add_column(width=2, justify="center")
-    table.add_column(max_width=_MESSAGE_COLUMN_MAX_WIDTH, overflow="fold")
-    table.add_column(justify="right")
-    table.add_column()
+def _build_scan_table(outcomes: dict[str, ScannerOutcome], order: Sequence[str]) -> Group:
+    """Render one compact summary line per scanner, with full-width lines for warnings/errors.
+
+    Each scanner gets its own small grid for the summary line (status icon, name,
+    elapsed, detail) so that line's width is driven only by scanner names, never
+    by warning/error text -- that text is rendered separately, below, as
+    unconstrained lines so it wraps at the full console width instead of forcing
+    every summary line wide.
+    """
+    name_width = max((len(name) for name in order), default=0)
+    renderables: list[RenderableType] = []
 
     for name in order:
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(width=2, justify="center")
+        grid.add_column(width=name_width)
+        grid.add_column(width=6, justify="right")
+        grid.add_column()
+
         outcome = outcomes.get(name)
         if outcome is None:
-            table.add_row(Spinner("dots"), name, "", "")
+            grid.add_row(Spinner("dots"), name, "", "")
+            renderables.append(grid)
             continue
 
         icon, style = _status_icon(outcome.status)
@@ -75,15 +89,16 @@ def _build_scan_table(outcomes: dict[str, ScannerOutcome], order: Sequence[str])
         elif outcome.status is ScannerStatus.ERROR:
             detail = "error"
 
-        table.add_row(Text(icon, style=style), name, f"{outcome.elapsed:.1f}s", detail)
+        grid.add_row(Text(icon, style=style), name, f"{outcome.elapsed:.1f}s", detail)
+        renderables.append(grid)
 
         if outcome.status in (ScannerStatus.WARNING, ScannerStatus.ERROR):
             for warning in outcome.warnings:
-                _add_message_row(table, warning)
+                renderables.extend(_message_lines(warning))
             if outcome.status is ScannerStatus.ERROR and outcome.error is not None:
-                _add_message_row(table, outcome.error)
+                renderables.extend(_message_lines(outcome.error))
 
-    return table
+    return Group(*renderables)
 
 
 @click.group()
