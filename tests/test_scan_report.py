@@ -174,7 +174,7 @@ class TestGetRemediationHint:
         assert "root" in hint
 
     def test_brew_timeout_message_from_run_command(self) -> None:
-        message = "Command timed out after 30s: ['brew', 'bundle', 'dump', '--file=-']"
+        message = 'Warning: "brew bundle dump --file=-" timed out after 30s'
 
         hint = get_remediation_hint(message)
 

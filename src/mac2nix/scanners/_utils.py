@@ -7,6 +7,7 @@ import errno
 import hashlib
 import logging
 import plistlib
+import shlex
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -350,10 +351,15 @@ def run_command(
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)  # noqa: S603
         if warn_on_nonzero and result.returncode != 0:
-            logger.warning("Command exited %d: %s\nstderr: %s", result.returncode, cmd, result.stderr.strip())
+            logger.warning(
+                'Warning: "%s" failed (exit %d)\nstderr: %s',
+                shlex.join(cmd),
+                result.returncode,
+                result.stderr.strip(),
+            )
         return result
     except subprocess.TimeoutExpired:
-        logger.warning("Command timed out after %ds: %s", timeout, cmd)
+        logger.warning('Warning: "%s" timed out after %ds', shlex.join(cmd), timeout)
         return None
     except FileNotFoundError:
         logger.warning("Executable not found during execution: %s", executable)

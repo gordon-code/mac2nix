@@ -20,6 +20,18 @@ _PREF_GLOBS: list[tuple[Path, str, str]] = [
     (Path.home() / "Library" / "Containers", "*/Data/Library/Preferences/*.plist", "disk"),
 ]
 
+# System daemon preference files that are always root-owned with mode 0600 on
+# every macOS install -- no user process can ever read them, Full Disk Access
+# included, since that's a traditional Unix permission wall, not a TCC gate.
+# Skip attempting them entirely rather than generating a permission-denied
+# warning on every single scan.
+_KNOWN_INACCESSIBLE_DOMAINS: frozenset[str] = frozenset(
+    {
+        "com.apple.apsd",
+        "com.apple.wifi.known-networks",
+    }
+)
+
 
 @register("preferences")
 class PreferencesScanner(BaseScannerPlugin):
@@ -36,6 +48,8 @@ class PreferencesScanner(BaseScannerPlugin):
                 continue
             for plist_path in sorted(base_dir.glob(pattern)):
                 if not plist_path.is_file():
+                    continue
+                if plist_path.stem in _KNOWN_INACCESSIBLE_DOMAINS:
                     continue
                 data = read_plist_safe(plist_path)
                 if not isinstance(data, dict):

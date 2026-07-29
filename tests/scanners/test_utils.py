@@ -71,6 +71,21 @@ class TestRunCommand:
         assert result.returncode == 1
         assert any("1" in r.message and "boom" in r.message for r in caplog.records)
 
+    def test_run_command_warning_uses_readable_shell_joined_command(self, caplog: pytest.LogCaptureFixture) -> None:
+        cmd = ["plutil", "-convert", "xml1", "-o", "-", "/Library/Preferences/x.plist"]
+        with (
+            patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/plutil"),
+            patch("mac2nix.scanners._utils.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+            run_command(cmd)
+
+        message = caplog.records[0].message
+        assert "plutil -convert xml1 -o - /Library/Preferences/x.plist" in message
+        assert "[" not in message
+        assert "'plutil'" not in message
+
     def test_run_command_no_warning_on_nonzero_exit_when_disabled(self, caplog: pytest.LogCaptureFixture) -> None:
         with (
             patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/false"),

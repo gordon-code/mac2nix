@@ -37,6 +37,27 @@ class TestPreferencesScanner:
         assert result.domains[0].keys["autohide"] is True
         assert result.domains[0].keys["tilesize"] == 48
 
+    def test_skips_known_inaccessible_domains_without_attempting_read(self, tmp_path: Path) -> None:
+        prefs_dir = tmp_path / "Library" / "Preferences"
+        prefs_dir.mkdir(parents=True)
+        (prefs_dir / "com.apple.dock.plist").write_bytes(plistlib.dumps({"autohide": True}))
+        (prefs_dir / "com.apple.apsd.plist").write_bytes(plistlib.dumps({"unreadable": "in practice"}))
+        (prefs_dir / "com.apple.wifi.known-networks.plist").write_bytes(plistlib.dumps({"unreadable": "too"}))
+
+        with (
+            patch("mac2nix.scanners.preferences._PREF_GLOBS", [(prefs_dir, "*.plist", "disk")]),
+            patch("mac2nix.scanners.preferences.run_command", side_effect=_no_cfprefsd),
+            patch("mac2nix.scanners.preferences.read_plist_safe") as mock_read,
+        ):
+            mock_read.return_value = {"autohide": True}
+            result = PreferencesScanner().scan()
+
+        # read_plist_safe must never even be called for the known-inaccessible domains --
+        # skipped entirely, not attempted-and-caught.
+        attempted_paths = {call.args[0].stem for call in mock_read.call_args_list}
+        assert attempted_paths == {"com.apple.dock"}
+        assert [d.domain_name for d in result.domains] == ["com.apple.dock"]
+
     def test_reads_binary_plist(self, tmp_path: Path) -> None:
         prefs_dir = tmp_path / "Library" / "Preferences"
         prefs_dir.mkdir(parents=True)
