@@ -4,7 +4,8 @@ These tests are excluded from the default pytest run (``-m "not integration"``).
 Run them explicitly via ``make test-integration`` or ``uv run pytest -m integration``.
 
 The base VM image is controlled by the ``MAC2NIX_BASE_VM`` environment variable
-(default: ``macos-sequoia-base``).  The CI workflow pulls the image before running.
+(default: ``macos-tahoe-base``).  ``make test-integration`` pulls the image
+automatically if it isn't already present locally.
 
 The ``shared_vm`` fixture is provided by ``tests/vm/conftest.py`` and creates a
 single VM clone shared across the session for non-lifecycle tests.
