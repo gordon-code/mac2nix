@@ -131,7 +131,7 @@ class NixStateScanner(BaseScannerPlugin):
     def _is_daemon_running() -> bool:
         # Try both official and Determinate installer service names via launchctl
         for service in ("org.nixos.nix-daemon", "systems.determinate.nix-daemon"):
-            result = run_command(["launchctl", "list", service])
+            result = run_command(["launchctl", "list", service], warn_on_nonzero=False)
             if result is None or result.returncode != 0:
                 continue
             # launchctl list output: PID\tStatus\tLabel
@@ -149,7 +149,7 @@ class NixStateScanner(BaseScannerPlugin):
         # Fallback: launchctl in user domain can't see system services,
         # so check for the process directly
         for proc_name in ("nix-daemon", "determinate-nixd"):
-            result = run_command(["pgrep", "-x", proc_name])
+            result = run_command(["pgrep", "-x", proc_name], warn_on_nonzero=False)
             if result is not None and result.returncode == 0 and result.stdout.strip():
                 return True
         return False

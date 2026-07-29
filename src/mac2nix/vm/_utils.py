@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import shlex
 import shutil
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,15 @@ async def async_ssh_exec(
     Builds the argument list with sshpass + ssh options. For remote commands
     involving pipes or redirects, wrap in ``['bash', '-c', 'pipeline']``.
 
+    ``cmd`` is collapsed into a single shell-quoted string via ``shlex.join()``
+    before being handed to ssh as one trailing argument. OpenSSH concatenates
+    multiple trailing command arguments with plain spaces (no re-quoting) to
+    build the single string it sends to the remote shell — passing ``cmd`` as
+    separate argv elements would let the remote shell re-tokenize a multi-word
+    ``-c`` payload, so bash's ``-c`` only captures the first word (e.g. running
+    bare ``comm`` instead of ``comm -13 file1 file2``) and silently discards
+    the rest as positional parameters.
+
     Args:
         ip: IP address or hostname of the VM.
         user: SSH username.
@@ -150,7 +160,7 @@ async def async_ssh_exec(
         f"ConnectTimeout={max(timeout // 2, 5)}",
         f"{user}@{ip}",
         "--",
-        *cmd,
+        shlex.join(cmd),
     ]
 
     logger.debug("Running SSH exec on %s@%s: %s", user, ip, cmd)

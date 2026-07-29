@@ -13,7 +13,7 @@ import pytest
 
 from mac2nix.vm.manager import TartVMManager
 
-BASE_VM = os.environ.get("MAC2NIX_BASE_VM", "macos-sequoia-base")
+BASE_VM = os.environ.get("MAC2NIX_BASE_VM", "macos-tahoe-base")
 VM_USER = os.environ.get("MAC2NIX_VM_USER", "admin")
 VM_PASSWORD = os.environ.get("MAC2NIX_VM_PASSWORD", "admin")
 

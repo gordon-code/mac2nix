@@ -1,8 +1,11 @@
 """Tests for Homebrew scanner."""
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from mac2nix.models.application import HomebrewState
 from mac2nix.scanners.homebrew import HomebrewScanner
@@ -125,6 +128,37 @@ class TestHomebrewScanner:
         assert result.taps == []
         assert result.formulae == []
         assert result.casks == []
+
+    def test_parse_brewfile_none_result_does_not_log_brew_not_available(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("mac2nix.scanners.homebrew.run_command", return_value=None),
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners.homebrew"),
+        ):
+            taps, formulae, casks, mas_apps = HomebrewScanner()._parse_brewfile()
+
+        assert taps == []
+        assert formulae == []
+        assert casks == []
+        assert mas_apps == []
+        assert not any("brew not available" in r.message for r in caplog.records)
+
+    def test_parse_brewfile_nonzero_exit_logs_corrected_message(
+        self, cmd_result, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with (
+            patch(
+                "mac2nix.scanners.homebrew.run_command",
+                return_value=cmd_result("", stderr="boom", returncode=1),
+            ),
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners.homebrew"),
+        ):
+            taps, formulae, casks, mas_apps = HomebrewScanner()._parse_brewfile()
+
+        assert taps == []
+        assert formulae == []
+        assert casks == []
+        assert mas_apps == []
+        assert any(r.message == "Unable to enumerate Homebrew state via 'brew bundle dump'" for r in caplog.records)
 
     def test_skips_comments_and_blanks(self, cmd_result) -> None:
         brewfile = '# Comment line\n\ntap "homebrew/core"\n'

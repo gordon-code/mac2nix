@@ -157,10 +157,22 @@ class FileSystemComparator:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _prune_predicates(self) -> str:
+        """Join exclude-dir path predicates plus the standing .localized exclusion.
+
+        Always appending the ``.localized`` predicate (rather than joining it
+        in via ``-or`` over a possibly-empty ``exclude_dirs``) avoids a
+        leading ``-or`` with no left-hand operand when ``exclude_dirs`` is
+        empty -- ``find`` rejects that as a syntax error ("Expected a
+        predicate"), which silently produced empty snapshots.
+        """
+        predicates = [f'-path "*/{d}"' for d in self._exclude_dirs]
+        predicates.append('-name ".localized"')
+        return " -or ".join(predicates)
+
     def _build_find_pipeline(self, save_path: str) -> str:
         """Return a shell pipeline string that snapshots the filesystem to *save_path*."""
-        prune_parts = " -or ".join(f'-path "*/{d}"' for d in self._exclude_dirs)
-        prune_clause = f'\\( {prune_parts} -or -name ".localized" \\) -prune -or -print'
+        prune_clause = f"\\( {self._prune_predicates()} \\) -prune -or -print"
         quoted_root = shlex.quote(self._scan_root)
         quoted_save = shlex.quote(save_path)
         # Use awk substr to strip the scan_root prefix — no regex, no injection risk.
@@ -224,8 +236,7 @@ class FileSystemComparator:
         :param scan_root: Override the instance scan root for this call.
         """
         root = scan_root if scan_root is not None else self._scan_root
-        prune_parts = " -or ".join(f'-path "*/{d}"' for d in self._exclude_dirs)
-        prune_clause = f'\\( {prune_parts} -or -name ".localized" \\) -prune -or'
+        prune_clause = f"\\( {self._prune_predicates()} \\) -prune -or"
         ts_iso = since.replace(microsecond=0).isoformat()
         cutoff = int(since.timestamp())
         quoted_root = shlex.quote(root)

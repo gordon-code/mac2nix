@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -51,7 +52,7 @@ class PackageManagersScanner(BaseScannerPlugin):
         }
         results: dict[str, object] = {}
         with ThreadPoolExecutor(max_workers=len(detectors)) as pool:
-            futures = {pool.submit(fn): name for name, fn in detectors.items()}
+            futures = {pool.submit(contextvars.copy_context().run, fn): name for name, fn in detectors.items()}
             for future, name in futures.items():
                 try:
                     results[name] = future.result()
@@ -352,7 +353,7 @@ class PackageManagersScanner(BaseScannerPlugin):
 
     @staticmethod
     def _get_npm_global_packages() -> list[LanguagePackage]:
-        result = run_command(["npm", "list", "-g", "--json", "--depth=0"], timeout=15)
+        result = run_command(["npm", "list", "-g", "--json", "--depth=0"], timeout=15, warn_on_nonzero=False)
         if result is None:
             return []
         if result.returncode != 0 and not result.stdout.strip():
@@ -421,7 +422,9 @@ class PackageManagersScanner(BaseScannerPlugin):
 
         merged: dict[str, LanguagePackage] = {}
         with ThreadPoolExecutor(max_workers=min(8, len(binaries))) as pool:
-            for pkg in pool.map(_inspect, binaries):
+            futures = [pool.submit(contextvars.copy_context().run, _inspect, b) for b in binaries]
+            for future in futures:
+                pkg = future.result()
                 if pkg is None:
                     continue
                 if pkg.name in merged:

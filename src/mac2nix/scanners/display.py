@@ -165,7 +165,9 @@ class DisplayScanner(BaseScannerPlugin):
     def _get_true_tone(self) -> bool | None:
         """Check True Tone (Color Adaptation) status."""
         # Try defaults read first
-        result = run_command(["defaults", "read", "com.apple.CoreBrightness", "CBColorAdaptationEnabled"])
+        result = run_command(
+            ["defaults", "read", "com.apple.CoreBrightness", "CBColorAdaptationEnabled"], warn_on_nonzero=False
+        )
         if result is not None and result.returncode == 0:
             value = result.stdout.strip()
             if value == "1":

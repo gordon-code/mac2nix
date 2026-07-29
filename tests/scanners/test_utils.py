@@ -1,11 +1,15 @@
 """Tests for scanner utility functions."""
 
+import errno
+import logging
 import plistlib
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
+
+import pytest
 
 from mac2nix.scanners._utils import (
     _parse_xml_dict,
@@ -54,6 +58,47 @@ class TestRunCommand:
 
         assert result is None
 
+    def test_run_command_logs_warning_on_nonzero_exit(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/false"),
+            patch("mac2nix.scanners._utils.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(args=["false"], returncode=1, stdout="", stderr="boom")
+            result = run_command(["false"])
+
+        assert result is not None
+        assert result.returncode == 1
+        assert any("1" in r.message and "boom" in r.message for r in caplog.records)
+
+    def test_run_command_warning_uses_readable_shell_joined_command(self, caplog: pytest.LogCaptureFixture) -> None:
+        cmd = ["plutil", "-convert", "xml1", "-o", "-", "/Library/Preferences/x.plist"]
+        with (
+            patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/plutil"),
+            patch("mac2nix.scanners._utils.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+            run_command(cmd)
+
+        message = caplog.records[0].message
+        assert "plutil -convert xml1 -o - /Library/Preferences/x.plist" in message
+        assert "[" not in message
+        assert "'plutil'" not in message
+
+    def test_run_command_no_warning_on_nonzero_exit_when_disabled(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/false"),
+            patch("mac2nix.scanners._utils.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(args=["false"], returncode=1, stdout="", stderr="boom")
+            result = run_command(["false"], warn_on_nonzero=False)
+
+        assert result is not None
+        assert result.returncode == 1
+        assert caplog.records == []
+
     def test_run_command_file_not_found(self) -> None:
         with (
             patch("mac2nix.scanners._utils.shutil.which", return_value="/usr/bin/gone"),
@@ -94,14 +139,41 @@ class TestReadPlistSafe:
 
         assert result is None
 
-    def test_read_plist_safe_permission_denied(self, tmp_path: Path) -> None:
+    def test_read_plist_safe_permission_denied_eperm_is_tcc_protected(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         plist_file = tmp_path / "locked.plist"
         plist_file.write_bytes(plistlib.dumps({"key": "value"}))
+        denied = PermissionError("denied")
+        denied.errno = errno.EPERM
 
-        with patch.object(Path, "open", side_effect=PermissionError("denied")):
+        with (
+            patch.object(Path, "open", side_effect=denied),
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
             result = read_plist_safe(plist_file)
 
         assert result is None
+        assert any("TCC-protected" in r.message for r in caplog.records)
+        assert not any("root-only" in r.message for r in caplog.records)
+
+    def test_read_plist_safe_permission_denied_eacces_is_root_only(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        plist_file = tmp_path / "locked.plist"
+        plist_file.write_bytes(plistlib.dumps({"key": "value"}))
+        denied = PermissionError("denied")
+        denied.errno = errno.EACCES
+
+        with (
+            patch.object(Path, "open", side_effect=denied),
+            caplog.at_level(logging.WARNING, logger="mac2nix.scanners._utils"),
+        ):
+            result = read_plist_safe(plist_file)
+
+        assert result is None
+        assert any("root-only" in r.message for r in caplog.records)
+        assert not any("TCC-protected" in r.message for r in caplog.records)
 
     def test_read_plist_safe_invalid_falls_back_to_plutil(self, tmp_path: Path) -> None:
         plist_file = tmp_path / "nextstep.plist"

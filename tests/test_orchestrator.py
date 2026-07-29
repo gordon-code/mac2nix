@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -13,6 +14,7 @@ from mac2nix.models.hardware import AudioConfig, DisplayConfig
 from mac2nix.models.services import LaunchAgentsResult, ScheduledTasks
 from mac2nix.models.system_state import SystemState
 from mac2nix.orchestrator import _fetch_system_profiler_batch, _get_system_metadata, run_scan
+from mac2nix.scan_report import ScannerOutcome, ScannerStatus, capture_scanner_logs
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,6 +39,27 @@ def _make_minimal_scanner(name: str, result: Any, *, available: bool = True) -> 
             return result
 
     return _MockScanner
+
+
+def _make_warning_scanner(name: str, logger_name: str, message: str) -> type:
+    """Create a mock scanner whose scan() logs a warning under `logger_name` then succeeds."""
+
+    class _WarningScanner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        @property
+        def name(self) -> str:
+            return name
+
+        def is_available(self) -> bool:
+            return True
+
+        def scan(self) -> _FakeResult:
+            logging.getLogger(logger_name).warning(message)
+            return _FakeResult()
+
+    return _WarningScanner
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +245,7 @@ class TestRunScan:
             patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
             patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
         ):
-            asyncio.run(run_scan(progress_callback=called.append))
+            asyncio.run(run_scan(progress_callback=lambda outcome: called.append(outcome.name)))
 
         assert sorted(called) == sorted(["_fake_a", "_fake_b"])
 
@@ -237,7 +260,7 @@ class TestRunScan:
             patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
             patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
         ):
-            asyncio.run(run_scan(progress_callback=called.append))
+            asyncio.run(run_scan(progress_callback=lambda outcome: called.append(outcome.name)))
 
         assert "_fake" in called
 
@@ -440,3 +463,250 @@ class TestRunScan:
 
         assert "_fake_selected" in called
         assert "_fake_other" not in called
+
+
+# ---------------------------------------------------------------------------
+# ScannerOutcome classification (status, warnings, error attribution)
+# ---------------------------------------------------------------------------
+
+
+class TestOutcomeClassification:
+    def test_outcome_success_for_clean_scanner(self) -> None:
+        registry = {"_fake_clean": _make_minimal_scanner("_fake_clean", _FakeResult())}
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome = outcomes["_fake_clean"]
+        assert outcome.status == ScannerStatus.SUCCESS
+        assert outcome.warnings == ()
+        assert outcome.error is None
+
+    def test_outcome_warning_when_scanner_logs_warning(self) -> None:
+        registry = {"_fake_warn": _make_warning_scanner("_fake_warn", "mac2nix.scanners.fake", "disk full")}
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome = outcomes["_fake_warn"]
+        assert outcome.status == ScannerStatus.WARNING
+        assert any("disk full" in warning for warning in outcome.warnings)
+
+    def test_outcome_error_when_scanner_raises(self) -> None:
+        class _CrashingScanner:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            @property
+            def name(self) -> str:
+                return "_fake_crash"
+
+            def is_available(self) -> bool:
+                return True
+
+            def scan(self) -> Any:
+                msg = "boom"
+                raise RuntimeError(msg)
+
+        registry: dict[str, type] = {"_fake_crash": _CrashingScanner}
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome = outcomes["_fake_crash"]
+        assert outcome.status == ScannerStatus.ERROR
+        assert outcome.error is not None
+        assert "RuntimeError: boom" in outcome.error
+
+    def test_crash_log_is_attributed_not_unattributed(self) -> None:
+        """The logger.exception() call in the except block must fire while
+        `_current_scanner` is still set, so it lands on the scanner's own
+        outcome rather than in `log_handler.unattributed`."""
+
+        class _CrashingScanner:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            @property
+            def name(self) -> str:
+                return "_fake_crash"
+
+            def is_available(self) -> bool:
+                return True
+
+            def scan(self) -> Any:
+                msg = "boom"
+                raise RuntimeError(msg)
+
+        registry: dict[str, type] = {"_fake_crash": _CrashingScanner}
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome = outcomes["_fake_crash"]
+        assert outcome.status == ScannerStatus.ERROR
+        assert outcome.error is not None
+        assert any("boom" in warning for warning in outcome.warnings)
+        assert log_handler.unattributed == []
+
+    def test_outcome_skipped_for_unavailable_scanner(self) -> None:
+        registry = {"_fake_skip": _make_minimal_scanner("_fake_skip", _FakeResult(), available=False)}
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome = outcomes["_fake_skip"]
+        assert outcome.status == ScannerStatus.SKIPPED
+
+    def test_outcome_warnings_isolated_between_concurrent_scanners(self) -> None:
+        """Regression test: contextvar attribution must not leak between concurrently-dispatched scanners."""
+        registry = {
+            "_fake_x": _make_warning_scanner("_fake_x", "mac2nix.scanners.fake_x", "warning from x"),
+            "_fake_y": _make_warning_scanner("_fake_y", "mac2nix.scanners.fake_y", "warning from y"),
+        }
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome_x = outcomes["_fake_x"]
+        outcome_y = outcomes["_fake_y"]
+        assert outcome_x.status == ScannerStatus.WARNING
+        assert outcome_y.status == ScannerStatus.WARNING
+        assert any("warning from x" in warning for warning in outcome_x.warnings)
+        assert not any("warning from y" in warning for warning in outcome_x.warnings)
+        assert any("warning from y" in warning for warning in outcome_y.warnings)
+        assert not any("warning from x" in warning for warning in outcome_y.warnings)
+
+    def test_crash_error_message_is_sanitized(self) -> None:
+        """Control characters embedded in an exception message must not reach ScannerOutcome.error."""
+
+        class _CrashingScanner:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            @property
+            def name(self) -> str:
+                return "_fake_crash"
+
+            def is_available(self) -> bool:
+                return True
+
+            def scan(self) -> Any:
+                msg = "boom \x1b[2J\x1b[H injected"
+                raise RuntimeError(msg)
+
+        registry: dict[str, type] = {"_fake_crash": _CrashingScanner}
+        outcomes: dict[str, ScannerOutcome] = {}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", return_value={}),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(
+                run_scan(
+                    progress_callback=lambda outcome: outcomes.__setitem__(outcome.name, outcome),
+                    log_handler=log_handler,
+                )
+            )
+
+        outcome = outcomes["_fake_crash"]
+        assert outcome.error is not None
+        assert "\x1b" not in outcome.error
+        assert "boom" in outcome.error
+        assert "injected" in outcome.error
+
+    def test_unattributed_prefetch_warning_captured(self) -> None:
+        """Warnings logged during the prefetch phase (before any scanner is attributed) land in `.unattributed`."""
+
+        def _fake_fetch() -> dict[str, Any]:
+            logging.getLogger("mac2nix.orchestrator").warning("prefetch hiccup")
+            return {}
+
+        registry = {"display": _make_minimal_scanner("display", DisplayConfig())}
+
+        with (
+            patch("mac2nix.orchestrator.get_all_scanners", return_value=registry),
+            patch("mac2nix.orchestrator.DisplayScanner", registry["display"]),
+            patch("mac2nix.orchestrator._get_system_metadata", return_value=("host", "14.0", "arm64")),
+            patch("mac2nix.orchestrator._fetch_system_profiler_batch", side_effect=_fake_fetch),
+            patch("mac2nix.orchestrator.read_launchd_plists", return_value=[]),
+            capture_scanner_logs() as log_handler,
+        ):
+            asyncio.run(run_scan(scanners=["display"], log_handler=log_handler))
+
+        assert any("prefetch hiccup" in warning for warning in log_handler.unattributed)

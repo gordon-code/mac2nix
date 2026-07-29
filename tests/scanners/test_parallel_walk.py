@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,29 @@ class TestParallelWalkDirs:
         result = parallel_walk_dirs(dirs, lambda d: d.name)
         # Order not guaranteed, but sorted must match
         assert sorted(result) == sorted(f"z{i}" for i in range(5))
+
+    def test_contextvar_propagates_into_pool_workers(self, tmp_path: Path) -> None:
+        """ContextVar set in the calling thread is visible inside pool workers.
+
+        Uses >2 dirs to force the ThreadPoolExecutor path (the <=2 direct-call
+        path already runs in-thread and needs no propagation).
+        """
+        test_var: ContextVar[str] = ContextVar("test_var", default="default")
+        token = test_var.set("caller-value")
+        try:
+            dirs = [tmp_path / f"c{i}" for i in range(5)]
+            for d in dirs:
+                d.mkdir()
+
+            def read_var(d: Path) -> str:
+                return test_var.get()
+
+            results = parallel_walk_dirs(dirs, read_var)
+        finally:
+            test_var.reset(token)
+
+        assert len(results) == 5
+        assert all(value == "caller-value" for value in results)
 
     def test_walk_skip_dirs_contains_new_entries(self) -> None:
         """Verify key new entries added to WALK_SKIP_DIRS."""

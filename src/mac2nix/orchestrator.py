@@ -8,6 +8,7 @@ import logging
 import platform
 import shutil
 import socket
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,13 @@ from typing import Any
 from pydantic import BaseModel
 
 from mac2nix.models.system_state import SystemState
+from mac2nix.scan_report import (
+    ScannerOutcome,
+    ScannerStatus,
+    _sanitize_for_display,
+    _ScannerLogCapture,
+    attribute_to_scanner,
+)
 from mac2nix.scanners import get_all_scanners
 from mac2nix.scanners._utils import read_launchd_plists, run_command
 from mac2nix.scanners.audio import AudioScanner
@@ -74,43 +82,86 @@ async def _run_scanner_async(
     scanner_name: str,
     scanner_cls: type,
     kwargs: dict[str, Any],
-    progress_callback: Callable[[str], None] | None,
+    progress_callback: Callable[[ScannerOutcome], None] | None,
+    log_handler: _ScannerLogCapture | None,
 ) -> tuple[str, BaseModel | None]:
     """Dispatch a single scanner in a thread and return (name, result)."""
+    start = time.monotonic()
+    # Pre-initialized in case a BaseException (e.g. asyncio.CancelledError) skips
+    # the `except Exception` clause below, leaving the finally block's read safe.
+    status = ScannerStatus.ERROR
+    warnings: tuple[str, ...] = ()
+    error: str | None = None
     try:
-        scanner = scanner_cls(**kwargs)
-        if not scanner.is_available():
-            logger.info("Scanner '%s' not available — skipping", scanner_name)
-            return scanner_name, None
+        # Covers the whole lifecycle (construction, is_available, scan, and the
+        # exception handler below) so any WARNING+ log emitted anywhere in it is
+        # attributed to this scanner, not left `unattributed` once the block exits.
+        with attribute_to_scanner(scanner_name):
+            try:
+                scanner = scanner_cls(**kwargs)
+                if not scanner.is_available():
+                    logger.info("Scanner '%s' not available — skipping", scanner_name)
+                    status = ScannerStatus.SKIPPED
+                    if log_handler is not None:
+                        log_handler.pop_records(scanner_name)
+                    return scanner_name, None
 
-        result: BaseModel = await asyncio.to_thread(scanner.scan)
-        logger.debug("Scanner '%s' completed", scanner_name)
-        return scanner_name, result
-    except Exception:
-        logger.exception("Scanner '%s' raised an exception", scanner_name)
-        return scanner_name, None
+                result: BaseModel = await asyncio.to_thread(scanner.scan)
+                logger.debug("Scanner '%s' completed", scanner_name)
+
+                records = log_handler.pop_records(scanner_name) if log_handler is not None else []
+                if records:
+                    status = ScannerStatus.WARNING
+                    warnings = tuple(records)
+                else:
+                    status = ScannerStatus.SUCCESS
+                return scanner_name, result
+            except Exception as exc:
+                logger.exception("Scanner '%s' raised an exception", scanner_name)
+                status = ScannerStatus.ERROR
+                error = _sanitize_for_display(f"{type(exc).__name__}: {exc}")
+                if log_handler is not None:
+                    warnings = tuple(log_handler.pop_records(scanner_name))
+                return scanner_name, None
     finally:
+        elapsed = time.monotonic() - start
+        outcome = ScannerOutcome(
+            name=scanner_name,
+            status=status,
+            elapsed=elapsed,
+            warnings=warnings,
+            error=error,
+        )
         # Safe: this runs on the event loop thread (after the await), not the
         # worker thread, so the callback sees serialised access.
         if progress_callback is not None:
             try:
-                progress_callback(scanner_name)
+                progress_callback(outcome)
             except Exception:
                 logger.debug("Progress callback failed for '%s'", scanner_name)
 
 
 async def run_scan(
     scanners: list[str] | None = None,
-    progress_callback: Callable[[str], None] | None = None,
+    progress_callback: Callable[[ScannerOutcome], None] | None = None,
+    log_handler: _ScannerLogCapture | None = None,
 ) -> SystemState:
     """Run all (or selected) scanners concurrently and return a SystemState.
 
     Args:
         scanners: List of scanner names to run. ``None`` runs all registered
             scanners. Unknown names are silently ignored.
-        progress_callback: Optional callable invoked with the scanner name after
-            each scanner completes (or is skipped). Suitable for updating a
-            progress bar. Called from the asyncio event loop thread.
+        progress_callback: Optional callable invoked with a ``ScannerOutcome``
+            after each scanner completes, is skipped, or errors. Suitable for
+            updating a progress bar. Called from the asyncio event loop thread.
+        log_handler: Optional ``_ScannerLogCapture`` used to attribute each
+            scanner's WARNING+ log records to its ``ScannerOutcome``. This
+            function does not create or attach the handler itself — the caller
+            (``cli.py``) owns the ``capture_scanner_logs()`` context and passes
+            the handler in so it can also inspect ``.unattributed`` (warnings
+            logged during the pre-fetch phase, before any scanner started) once
+            this function returns. ``None`` disables warning attribution;
+            outcomes will never be classified as ``WARNING`` in that case.
 
     Returns:
         Populated :class:`~mac2nix.models.system_state.SystemState`.
@@ -134,7 +185,7 @@ async def run_scan(
             continue
         tasks.append(
             asyncio.create_task(
-                _run_scanner_async(name, cls, {}, progress_callback),
+                _run_scanner_async(name, cls, {}, progress_callback, log_handler),
                 name=f"scanner-{name}",
             )
         )
@@ -156,6 +207,7 @@ async def run_scan(
                     DisplayScanner,
                     {"prefetched_data": batched_sp},
                     progress_callback,
+                    log_handler,
                 ),
                 name="scanner-display",
             )
@@ -168,6 +220,7 @@ async def run_scan(
                     AudioScanner,
                     {"prefetched_data": batched_sp},
                     progress_callback,
+                    log_handler,
                 ),
                 name="scanner-audio",
             )
@@ -180,6 +233,7 @@ async def run_scan(
                     SystemScanner,
                     {"prefetched_data": batched_sp},
                     progress_callback,
+                    log_handler,
                 ),
                 name="scanner-system",
             )
@@ -192,6 +246,7 @@ async def run_scan(
                     LaunchAgentsScanner,
                     {"launchd_plists": launchd_plists},
                     progress_callback,
+                    log_handler,
                 ),
                 name="scanner-launch_agents",
             )
@@ -204,6 +259,7 @@ async def run_scan(
                     CronScanner,
                     {"launchd_plists": launchd_plists},
                     progress_callback,
+                    log_handler,
                 ),
                 name="scanner-cron",
             )

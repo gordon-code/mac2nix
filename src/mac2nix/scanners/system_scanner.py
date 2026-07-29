@@ -219,7 +219,7 @@ class SystemScanner(BaseScannerPlugin):
         if result is not None and result.returncode == 0:
             local_hostname = result.stdout.strip() or None
 
-        result = run_command(["scutil", "--get", "HostName"])
+        result = run_command(["scutil", "--get", "HostName"], warn_on_nonzero=False)
         if result is not None and result.returncode == 0:
             dns_hostname = result.stdout.strip() or None
 
@@ -244,7 +244,7 @@ class SystemScanner(BaseScannerPlugin):
             return TimeMachineConfig(configured=False)
 
         latest_backup: datetime | None = None
-        result = run_command(["tmutil", "latestbackup"])
+        result = run_command(["tmutil", "latestbackup"], warn_on_nonzero=False)
         if result is not None and result.returncode == 0:
             backup_path = result.stdout.strip()
             if backup_path:
@@ -347,7 +347,7 @@ class SystemScanner(BaseScannerPlugin):
 
     def _get_startup_chime(self) -> bool | None:
         """Check startup chime setting via nvram."""
-        result = run_command(["nvram", "SystemAudioVolume"])
+        result = run_command(["nvram", "SystemAudioVolume"], warn_on_nonzero=False)
         if result is None or result.returncode != 0:
             # Missing/error typically means chime is on (default)
             return None
@@ -375,7 +375,7 @@ class SystemScanner(BaseScannerPlugin):
 
         # Fallback: check if timed process is running (admin-free)
         if ntp_enabled is None:
-            result = run_command(["pgrep", "-x", "timed"])
+            result = run_command(["pgrep", "-x", "timed"], warn_on_nonzero=False)
             if result is not None:
                 ntp_enabled = result.returncode == 0
 
@@ -396,7 +396,7 @@ class SystemScanner(BaseScannerPlugin):
 
     def _get_printers(self) -> list[PrinterInfo]:
         """Discover installed printers."""
-        result = run_command(["lpstat", "-a"])
+        result = run_command(["lpstat", "-a"], warn_on_nonzero=False)
         if result is None or result.returncode != 0:
             return []
 
@@ -412,7 +412,7 @@ class SystemScanner(BaseScannerPlugin):
 
         # Get default printer
         default_name: str | None = None
-        result = run_command(["lpstat", "-d"])
+        result = run_command(["lpstat", "-d"], warn_on_nonzero=False)
         if result is not None and result.returncode == 0:
             output = result.stdout.strip()
             if ":" in output:
@@ -452,11 +452,11 @@ class SystemScanner(BaseScannerPlugin):
         if result is not None and result.returncode == 0:
             remote_login = "on" in result.stdout.lower()
 
-        result = run_command(["launchctl", "list", "com.apple.screensharing"])
+        result = run_command(["launchctl", "list", "com.apple.screensharing"], warn_on_nonzero=False)
         if result is not None:
             screen_sharing = result.returncode == 0
 
-        result = run_command(["launchctl", "list", "com.apple.smbd"])
+        result = run_command(["launchctl", "list", "com.apple.smbd"], warn_on_nonzero=False)
         if result is not None:
             file_sharing = result.returncode == 0
 
@@ -467,7 +467,7 @@ class SystemScanner(BaseScannerPlugin):
         if Path("/Library/Apple/usr/share/rosetta").is_dir():
             return True
         # Fallback: try running arch command
-        result = run_command(["arch", "-x86_64", "/usr/bin/true"], timeout=5)
+        result = run_command(["arch", "-x86_64", "/usr/bin/true"], timeout=5, warn_on_nonzero=False)
         if result is not None:
             return result.returncode == 0
         return None
@@ -533,7 +533,7 @@ class SystemScanner(BaseScannerPlugin):
         desktop_sync = False
         documents_sync = False
 
-        result = run_command(["defaults", "read", "MobileMeAccounts", "Accounts"])
+        result = run_command(["defaults", "read", "MobileMeAccounts", "Accounts"], warn_on_nonzero=False)
         if result is not None and result.returncode == 0:
             output = result.stdout.strip()
             signed_in = bool(output) and output != "(\n)"

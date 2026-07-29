@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextvars
 import errno
 import hashlib
 import logging
 import plistlib
+import shlex
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -270,7 +272,7 @@ def parallel_walk_dirs[T](
                 logger.exception("Failed to process directory: %s", d)
     else:
         with ThreadPoolExecutor(max_workers=min(max_workers, len(dirs))) as pool:
-            futures = {pool.submit(process_fn, d): d for d in dirs}
+            futures = {pool.submit(contextvars.copy_context().run, process_fn, d): d for d in dirs}
             for future in as_completed(futures):
                 directory = futures[future]
                 try:
@@ -288,7 +290,9 @@ LAUNCHD_DIRS: list[tuple[Path, str]] = [
 ]
 
 
-SENSITIVE_KEY_PATTERNS = frozenset({"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH"})
+SENSITIVE_KEY_PATTERNS = frozenset(
+    {"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_AUTH", "_PASSPHRASE", "_BEARER"}
+)
 
 
 def redact_sensitive_keys(data: dict[str, Any]) -> None:
@@ -327,11 +331,16 @@ def run_command(
     cmd: list[str],
     *,
     timeout: int = 30,
+    warn_on_nonzero: bool = True,
 ) -> subprocess.CompletedProcess[str] | None:
     """Run a subprocess command safely.
 
     Validates that the executable exists before running. Never uses shell=True.
-    Returns None on any failure (command not found, non-zero exit, timeout).
+    Returns None if the executable is not found or on timeout.
+
+    Set warn_on_nonzero=False for commands known to exit non-zero in benign
+    cases (e.g. npm's peer-dependency warnings) so callers can inspect stdout
+    themselves without generating a false-alarm WARNING log.
     """
     executable = cmd[0]
     if shutil.which(executable) is None:
@@ -340,9 +349,17 @@ def run_command(
 
     logger.debug("Running command: %s", cmd)
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)  # noqa: S603
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)  # noqa: S603
+        if warn_on_nonzero and result.returncode != 0:
+            logger.warning(
+                'Warning: "%s" failed (exit %d)\nstderr: %s',
+                shlex.join(cmd),
+                result.returncode,
+                result.stderr.strip(),
+            )
+        return result
     except subprocess.TimeoutExpired:
-        logger.warning("Command timed out after %ds: %s", timeout, cmd)
+        logger.warning('Warning: "%s" timed out after %ds', shlex.join(cmd), timeout)
         return None
     except FileNotFoundError:
         logger.warning("Executable not found during execution: %s", executable)
@@ -359,10 +376,15 @@ def read_plist_safe(path: Path) -> dict[str, Any] | list[Any] | None:
         with path.open("rb") as f:
             data = plistlib.load(f)
     except PermissionError as exc:
+        # Per Apple DTS guidance: EACCES means a traditional BSD permission/ACL
+        # denial (e.g. a root-owned, 0600 system file -- Full Disk Access cannot
+        # override Unix file modes). EPERM means the block came from somewhere
+        # else -- TCC, sandboxing, or another security layer -- which Full Disk
+        # Access can actually resolve.
         if exc.errno == errno.EPERM:
-            logger.debug("Skipping TCC-protected plist: %s", path)
+            logger.warning("Permission denied reading plist (TCC-protected): %s", path)
         else:
-            logger.warning("Permission denied reading plist: %s", path)
+            logger.warning("Permission denied reading plist (root-only, not a Full Disk Access issue): %s", path)
         return None
     except (plistlib.InvalidFileException, ValueError, OverflowError):
         # plistlib can't handle NeXTStep-format plists, some newer binary plist

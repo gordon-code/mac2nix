@@ -856,6 +856,22 @@ class TestRedactSensitiveKeys:
         redacted = "***REDACTED***"
         assert data["my_auth_header"] == redacted
 
+    def test_redacts_bearer_key(self) -> None:
+        data = {"SESSION_BEARER": "xyz", "name": "test"}
+        redact_sensitive_keys(data)
+
+        redacted = "***REDACTED***"
+        assert data["SESSION_BEARER"] == redacted
+        assert data["name"] == "test"
+
+    def test_redacts_passphrase_key(self) -> None:
+        data = {"VAULT_PASSPHRASE": "xyz", "name": "test"}
+        redact_sensitive_keys(data)
+
+        redacted = "***REDACTED***"
+        assert data["VAULT_PASSPHRASE"] == redacted
+        assert data["name"] == "test"
+
     def test_no_sensitive_keys(self) -> None:
         data = {"name": "test", "count": 42}
         redact_sensitive_keys(data)

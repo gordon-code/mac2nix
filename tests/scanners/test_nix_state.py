@@ -190,6 +190,27 @@ class TestNixInstallation:
         with patch("mac2nix.scanners.nix_state.run_command", return_value=None):
             assert NixStateScanner._is_daemon_running() is False
 
+    def test_daemon_check_disables_warn_on_nonzero(self, cmd_result) -> None:
+        """launchctl exits non-zero whenever the checked label isn't loaded, and pgrep
+        exits non-zero when no process matches — both are expected, benign outcomes.
+        The daemon check must opt out of run_command's default WARNING log so it
+        doesn't falsely flag the scanner as ScannerStatus.WARNING."""
+        calls: list[tuple[tuple, dict]] = []
+
+        def side_effect(*args, **kwargs):
+            calls.append((args, kwargs))
+            return cmd_result("", returncode=1)
+
+        with patch("mac2nix.scanners.nix_state.run_command", side_effect=side_effect):
+            NixStateScanner._is_daemon_running()
+
+        launchctl_calls = [call for call in calls if call[0][0][0] == "launchctl"]
+        pgrep_calls = [call for call in calls if call[0][0][0] == "pgrep"]
+        assert len(launchctl_calls) == 2
+        assert len(pgrep_calls) == 2
+        assert all(call[1].get("warn_on_nonzero") is False for call in launchctl_calls)
+        assert all(call[1].get("warn_on_nonzero") is False for call in pgrep_calls)
+
 
 # ---------------------------------------------------------------------------
 # Profile detection

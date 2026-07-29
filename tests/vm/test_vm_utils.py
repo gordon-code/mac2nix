@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -347,8 +348,10 @@ class TestAsyncSshExec:
             "--",
         ]
         assert cmd[: len(expected_prefix)] == expected_prefix
-        # Remote command appended after --
-        assert cmd[len(expected_prefix) :] == ["uname", "-a"]
+        # Remote command appended after -- as a single shell-joined argv
+        # element (see test_multiword_remote_command_survives_ssh_rejoin_as_one_token
+        # for why this must not be split across separate argv items).
+        assert cmd[len(expected_prefix) :] == ["uname -a"]
         # Password passed via env, not argv
         assert captured_env[0] == {"SSHPASS": "mypassword"}
 
@@ -489,4 +492,43 @@ class TestAsyncSshExec:
         assert "--" in cmd
         # -- must appear before the remote command
         dash_idx = cmd.index("--")
-        assert cmd[dash_idx + 1 :] == ["ls", "-la"]
+        assert cmd[dash_idx + 1 :] == ["ls -la"]
+
+    def test_multiword_remote_command_survives_ssh_rejoin_as_one_token(self) -> None:
+        """A ['bash', '-c', 'multi word script'] cmd must collapse to ONE argv
+        element, not be left as separate items.
+
+        OpenSSH concatenates its trailing command arguments with plain spaces
+        (no re-quoting) to build the single string it sends to the remote
+        shell. If cmd were passed as separate argv items, the remote shell
+        would re-tokenize a multi-word -c payload, so bash's -c only captures
+        the first word (e.g. bare `comm` instead of `comm -13 file1 file2`)
+        and silently discards the rest as positional parameters.
+        """
+        captured_cmd: list[list[str]] = []
+
+        async def capturing_run(
+            cmd: list[str], *, timeout: int = 30, env: dict[str, str] | None = None
+        ) -> tuple[int, str, str]:
+            captured_cmd.append(cmd)
+            return (0, "", "")
+
+        remote_script = "comm -13 '/tmp/before.txt' '/tmp/after.txt'"
+
+        async def _run() -> None:
+            with (
+                patch("mac2nix.vm._utils.is_sshpass_available", return_value=True),
+                patch("mac2nix.vm._utils.async_run_command", side_effect=capturing_run),
+            ):
+                await async_ssh_exec("10.0.0.1", "u", "p", ["bash", "-c", remote_script])
+
+        asyncio.run(_run())
+        cmd = captured_cmd[0]
+        dash_idx = cmd.index("--")
+        remote_args = cmd[dash_idx + 1 :]
+
+        # Collapsed into exactly one argv element -- ssh's own rejoin is a no-op.
+        assert len(remote_args) == 1
+        # Reparsing it recovers the original 3-token command, proving the -c
+        # payload survives ssh's remote-command reconstruction intact.
+        assert shlex.split(remote_args[0]) == ["bash", "-c", remote_script]

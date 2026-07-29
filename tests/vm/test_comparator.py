@@ -440,6 +440,23 @@ class TestSnapshot:
         pipeline = vm.exec_command.call_args[0][0][2]
         assert "MySpecialDir" in pipeline
 
+    def test_empty_exclude_dirs_produces_valid_find_syntax(self) -> None:
+        """An empty exclude_dirs list must not leave a leading '-or' with no
+        left-hand operand -- `find` rejects that as a syntax error ("Expected
+        a predicate"), which silently produced empty snapshots (find exits
+        early, and stderr is redirected to /dev/null).
+        """
+        vm = _make_vm((True, "", ""))
+        fc = FileSystemComparator(vm, exclude_dirs=[])
+
+        async def _run() -> None:
+            await fc.snapshot("/tmp/snap.txt")
+
+        asyncio.run(_run())
+        pipeline = vm.exec_command.call_args[0][0][2]
+        assert '\\( -or -name ".localized" \\)' not in pipeline
+        assert '\\( -name ".localized" \\)' in pipeline
+
 
 # ---------------------------------------------------------------------------
 # get_created_files()
@@ -689,3 +706,19 @@ class TestGetModifiedFiles:
         pipeline = vm.exec_command.call_args[0][0][2]
         assert "awk" in pipeline
         assert "cutoff" in pipeline
+
+    def test_empty_exclude_dirs_produces_valid_find_syntax(self) -> None:
+        """Same leading-'-or' syntax bug as the snapshot pipeline (see
+        TestSnapshot.test_empty_exclude_dirs_produces_valid_find_syntax) --
+        both build their prune clause from the shared _prune_predicates().
+        """
+        vm = _make_vm((True, "", ""))
+        fc = FileSystemComparator(vm, exclude_dirs=[])
+
+        async def _run() -> None:
+            await fc.get_modified_files(self._make_since())
+
+        asyncio.run(_run())
+        pipeline = vm.exec_command.call_args[0][0][2]
+        assert '\\( -or -name ".localized" \\)' not in pipeline
+        assert '\\( -name ".localized" \\)' in pipeline

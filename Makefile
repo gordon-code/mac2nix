@@ -19,6 +19,7 @@ test:
 	uv run pytest
 
 test-integration:
+	tart list | grep -q "$${MAC2NIX_BASE_VM:-macos-tahoe-base}" || tart pull ghcr.io/cirruslabs/macos-tahoe-base@sha256:a8e1c8305758643f513fdccdd829c2243687c60791083dea42f73f0b7aeb435c # latest
 	uv run pytest -m integration --tb=long
 
 test-quick:
