@@ -15,6 +15,14 @@ from mac2nix.vm.manager import TartVMManager
 
 logger = logging.getLogger(__name__)
 
+# Sourcing the Nix profile script is required before any non-interactive SSH
+# command can see Nix binaries — a bare command has no guarantee that a login
+# shell (and its profile.d sourcing) ran first.
+_NIX_PROFILE_SOURCE = ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
+
+# Shared with scripts/prewarm_vm.py so the two Nix-install invocations can't drift apart.
+NIX_INSTALLER_URL = "https://install.determinate.systems/nix"
+
 # ---------------------------------------------------------------------------
 # Models (co-located per architect decision)
 # ---------------------------------------------------------------------------
@@ -179,9 +187,20 @@ class Validator:
     # Remote paths inside the VM.
     _REMOTE_FLAKE_DIR = "/tmp/mac2nix-flake"  # noqa: S108
     _REMOTE_SCAN_PATH = "/tmp/mac2nix-state.json"  # noqa: S108
+    _REMOTE_SOURCE_DIR = "/tmp/mac2nix-source"  # noqa: S108
 
-    def __init__(self, vm: TartVMManager) -> None:
+    # Default preserves today's `mac2nix validate` CLI behavior exactly — only
+    # this plan's own nix_vm tests pass a local checkout path instead.
+    _DEFAULT_MAC2NIX_SOURCE = "github:gordon-code/mac2nix"
+
+    # Directories excluded when SCPing a local mac2nix checkout into the VM —
+    # dev-machine-only content (VCS history, secrets, scan data, project memory)
+    # that has no bearing on the package being scanned from inside the VM.
+    _LOCAL_SOURCE_EXCLUDE = frozenset({".git", ".env", "data", "hack"})
+
+    def __init__(self, vm: TartVMManager, mac2nix_source: str = _DEFAULT_MAC2NIX_SOURCE) -> None:
         self._vm = vm
+        self._mac2nix_source = mac2nix_source
 
     async def validate(self, flake_path: Path, source_state: SystemState) -> ValidationResult:
         """Run the full validation pipeline.
@@ -224,20 +243,37 @@ class Validator:
             errors=[],
         )
 
-    async def _copy_flake_to_vm(self, flake_path: Path) -> None:
-        """SCP the flake directory into the VM at :attr:`_REMOTE_FLAKE_DIR`.
+    async def _copy_flake_to_vm(
+        self,
+        local_path: Path,
+        remote_dir: str | None = None,
+        exclude: frozenset[str] = frozenset(),
+        what: str = "flake",
+    ) -> None:
+        """SCP *local_path* into the VM at *remote_dir* (default :attr:`_REMOTE_FLAKE_DIR`).
+
+        When *exclude* is non-empty, only *local_path*'s top-level entries not
+        named in *exclude* are copied — used by :meth:`_scan_vm`'s local-source
+        override to scope the copy to package content, never dev-machine-only
+        directories.
 
         Uses sshpass + scp with argument lists (no shell=True).
         Raises :exc:`VMError` if scp fails or the VM has no IP.
         """
+        remote_dir = remote_dir or self._REMOTE_FLAKE_DIR
         ip = await self._vm.get_ip()
         if not ip:
-            raise VMError("Cannot copy flake — VM has no IP address")
+            raise VMError(f"Cannot copy {what} — VM has no IP address")
 
         # Ensure remote destination exists.
-        ok, _out, err = await self._vm.exec_command(["mkdir", "-p", self._REMOTE_FLAKE_DIR])
+        ok, _out, err = await self._vm.exec_command(["mkdir", "-p", remote_dir])
         if not ok:
-            raise VMError(f"mkdir {self._REMOTE_FLAKE_DIR!r} failed: {err.strip()}")
+            raise VMError(f"mkdir {remote_dir!r} failed: {err.strip()}")
+
+        if exclude:
+            sources = [str(p) for p in sorted(local_path.iterdir()) if p.name not in exclude]
+        else:
+            sources = [str(local_path) + "/."]
 
         # scp -r <local> user@ip:<remote>  — uses sshpass -e for password auth.
         # Password passed via SSHPASS env var to avoid exposure in ps aux.
@@ -252,42 +288,51 @@ class Validator:
             "-o",
             "LogLevel=ERROR",
             "-r",
-            str(flake_path) + "/.",
-            f"{self._vm.vm_user}@{ip}:{self._REMOTE_FLAKE_DIR}",
+            *sources,
+            f"{self._vm.vm_user}@{ip}:{remote_dir}",
         ]
 
         returncode, _stdout, stderr = await async_run_command(
             scp_cmd, timeout=120, env={"SSHPASS": self._vm.vm_password}
         )
         if returncode != 0:
-            raise VMError(f"scp flake to VM failed (exit {returncode}): {stderr.strip()}")
+            raise VMError(f"scp {what} to VM failed (exit {returncode}): {stderr.strip()}")
 
-        logger.debug("Flake copied to VM at %s", self._REMOTE_FLAKE_DIR)
+        logger.debug("%s copied to VM at %s", what, remote_dir)
 
     async def _bootstrap_nix_darwin(self) -> None:
-        """Install Nix and nix-darwin inside the VM.
+        """Install Nix inside the VM, skipping the install if Nix is already present.
+
+        The idempotency check sources the Nix profile script first, matching
+        :meth:`_rebuild_switch`/:meth:`_scan_vm`'s own pattern — a bare
+        ``which nix`` over a non-interactive SSH session has no guarantee that
+        profile.d was sourced, and would report "not found" even against a
+        pre-warmed, Nix-already-installed image (see ``scripts/prewarm_vm.py``).
 
         Raises :exc:`VMError` if any bootstrap step fails.
         """
+        check_cmd = f"{_NIX_PROFILE_SOURCE} && which nix"
+        already_installed, _out, _err = await self._vm.exec_command(["bash", "-c", check_cmd])
+        if already_installed:
+            logger.debug("Nix already present in VM — skipping install")
+            return
+
         logger.debug("Bootstrapping Nix in VM")
 
         installer_path = "/tmp/nix-installer.sh"  # noqa: S108
 
         # Step 1: Download the Determinate Systems nix installer to a file.
-        ok, _out, err = await self._vm.exec_command(
-            [
-                "curl",
-                "--proto",
-                "=https",
-                "--tlsv1.2",
-                "-sSf",
-                "-L",
-                "https://install.determinate.systems/nix",
-                "-o",
-                installer_path,
-            ],
-            timeout=60,
-        )
+        # Two things collide here, verified empirically against a real VM:
+        # (1) curl on this VM's own build rejects the combined "--proto=https"
+        # form outright ("option --proto=https: is unknown"); (2) the
+        # separate-argv form ["--proto", "=https"] hits the VM's remote login
+        # shell (zsh), which treats a bare leading-"=" word as its own
+        # command-path-expansion syntax and fails with "https not found"
+        # before curl ever runs. Wrapping in `bash -c` with `=https`
+        # single-quoted sidesteps both: bash has no equals-expansion, and
+        # curl accepts the quoted, space-separated two-word form.
+        download_cmd = f"curl --proto '=https' --tlsv1.2 -sSf -L {NIX_INSTALLER_URL} -o {installer_path}"
+        ok, _out, err = await self._vm.exec_command(["bash", "-c", download_cmd], timeout=60)
         if not ok:
             raise VMError(f"Failed to download Nix installer: {err.strip()}")
 
@@ -321,11 +366,7 @@ class Validator:
         Raises :exc:`VMError` if the rebuild fails.
         """
         logger.debug("Running nix-darwin switch")
-        cmd = (
-            f"cd {self._REMOTE_FLAKE_DIR}"
-            " && . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
-            " && nix run nix-darwin -- switch --flake ."
-        )
+        cmd = f"cd {self._REMOTE_FLAKE_DIR} && {_NIX_PROFILE_SOURCE} && nix run nix-darwin -- switch --flake ."
         ok, out, err = await self._vm.exec_command(["bash", "-c", cmd], timeout=600)
         combined = (out + "\n" + err).strip()
         if not ok:
@@ -337,15 +378,30 @@ class Validator:
     async def _scan_vm(self) -> SystemState:
         """Run mac2nix inside the VM via nix run, SCP the result back, parse it.
 
+        When :attr:`_mac2nix_source` is the published default, runs the
+        GitHub-hosted flake directly — this is the existing, unchanged
+        behavior of the `mac2nix validate` CLI. Otherwise, `_mac2nix_source`
+        is treated as a local checkout path: it's SCPed into the VM (scoped
+        via :attr:`_LOCAL_SOURCE_EXCLUDE`) and run from there instead — used
+        by this plan's own nix_vm tests, whose generator code isn't published
+        to GitHub yet.
+
         Raises :exc:`VMError` if any step fails or the result cannot be parsed.
         """
         logger.debug("Running mac2nix scan in VM via nix run")
 
-        # Run mac2nix directly from GitHub using nix run — no pip needed.
-        nix_run_cmd = (
-            ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
-            f" && nix run github:gordon-code/mac2nix -- scan -o {self._REMOTE_SCAN_PATH}"
-        )
+        if self._mac2nix_source == self._DEFAULT_MAC2NIX_SOURCE:
+            run_target = self._mac2nix_source
+        else:
+            await self._copy_flake_to_vm(
+                Path(self._mac2nix_source),
+                remote_dir=self._REMOTE_SOURCE_DIR,
+                exclude=self._LOCAL_SOURCE_EXCLUDE,
+                what="mac2nix source",
+            )
+            run_target = self._REMOTE_SOURCE_DIR
+
+        nix_run_cmd = f"{_NIX_PROFILE_SOURCE} && nix run {run_target} -- scan -o {self._REMOTE_SCAN_PATH}"
         ok, _out, err = await self._vm.exec_command(["bash", "-c", nix_run_cmd], timeout=300)
         if not ok:
             raise VMError(f"mac2nix scan failed: {err.strip()}")

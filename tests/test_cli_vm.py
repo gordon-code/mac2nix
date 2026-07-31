@@ -5,14 +5,14 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
 
 from mac2nix.cli import main
 from mac2nix.models.system_state import SystemState
 from mac2nix.vm.discovery import DiscoveryResult
-from mac2nix.vm.validator import DomainScore, FidelityReport
+from mac2nix.vm.validator import DomainScore, FidelityReport, ValidationResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -154,6 +154,61 @@ class TestValidateSuccess:
             ],
         )
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# validate command — --mac2nix-source option
+# ---------------------------------------------------------------------------
+
+
+class TestValidateMac2nixSourceOption:
+    def test_help_shows_option_with_default(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", "--help"])
+        assert result.exit_code == 0
+        assert "--mac2nix-source" in result.output
+        assert "github:gordon-code/mac2nix" in result.output
+
+    def _invoke_validate(self, tmp_path: Path, extra_args: list[str] | None = None):
+        scan_file = tmp_path / "state.json"
+        scan_file.write_text(_make_state().to_json())
+        flake_dir = tmp_path / "flake"
+        flake_dir.mkdir()
+
+        mock_vm = MagicMock()
+        mock_vm.__aenter__ = AsyncMock(return_value=mock_vm)
+        mock_vm.__aexit__ = AsyncMock(return_value=False)
+        mock_vm.clone = AsyncMock()
+        mock_vm.start = AsyncMock()
+
+        mock_validator_instance = MagicMock()
+        mock_validator_instance.validate = AsyncMock(
+            return_value=ValidationResult(success=True, fidelity=None, build_output="", errors=[])
+        )
+        mock_validator_cls = MagicMock(return_value=mock_validator_instance)
+
+        runner = CliRunner()
+        with (
+            patch("mac2nix.vm.manager.TartVMManager.is_available", return_value=True),
+            patch("mac2nix.cli.TartVMManager", return_value=mock_vm),
+            patch("mac2nix.cli.Validator", mock_validator_cls),
+        ):
+            args = ["validate", "--flake-path", str(flake_dir), "--scan-file", str(scan_file), *(extra_args or [])]
+            result = runner.invoke(main, args)
+
+        return result, mock_validator_cls
+
+    def test_default_reaches_validator(self, tmp_path: Path) -> None:
+        result, mock_validator_cls = self._invoke_validate(tmp_path)
+        assert result.exit_code == 0, result.output
+        _, kwargs = mock_validator_cls.call_args
+        assert kwargs["mac2nix_source"] == "github:gordon-code/mac2nix"
+
+    def test_override_reaches_validator(self, tmp_path: Path) -> None:
+        result, mock_validator_cls = self._invoke_validate(tmp_path, ["--mac2nix-source", "."])
+        assert result.exit_code == 0, result.output
+        _, kwargs = mock_validator_cls.call_args
+        assert kwargs["mac2nix_source"] == "."
 
 
 # ---------------------------------------------------------------------------

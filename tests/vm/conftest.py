@@ -12,6 +12,7 @@ import uuid
 import pytest
 
 from mac2nix.vm.manager import TartVMManager
+from tests.vm_fixtures import local_vm_names, nix_darwin_vm  # noqa: F401 -- re-exported for tests/vm/*.py
 
 BASE_VM = os.environ.get("MAC2NIX_BASE_VM", "macos-tahoe-base")
 VM_USER = os.environ.get("MAC2NIX_VM_USER", "admin")
@@ -22,17 +23,7 @@ def _can_run_integration() -> bool:
     """Check that tart, sshpass, and the base VM image are all available."""
     if shutil.which("tart") is None or shutil.which("sshpass") is None:
         return False
-    try:
-        result = subprocess.run(
-            ["tart", "list"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return result.returncode == 0 and BASE_VM in result.stdout
+    return BASE_VM in local_vm_names()
 
 
 skip_missing_deps = pytest.mark.skipif(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import shutil
 
@@ -26,6 +27,54 @@ _SSH_DISCONNECT_PATTERNS = (
     "connection refused",
     "no route to host",
 )
+
+# Pinned Tart base image used by this project's real VM integration tests.
+# Kept here, alongside TartVMManager, so scripts/prewarm_vm.py and
+# tests/vm_fixtures.py share one source of truth instead of re-deriving the
+# digest (mirrors the Makefile's own test-integration target).
+BASE_IMAGE_NAME = "macos-tahoe-base"
+BASE_IMAGE_REF = (
+    "ghcr.io/cirruslabs/macos-tahoe-base@sha256:a8e1c8305758643f513fdccdd829c2243687c60791083dea42f73f0b7aeb435c"
+)
+
+
+async def _local_vm_names() -> set[str]:
+    """Return the exact set of locally-known Tart VM/image names.
+
+    Uses ``tart list --format json`` rather than the plain-text table —
+    verified empirically that a plain substring check against the table
+    (mirroring the Makefile's own ``grep -q``) false-positives on
+    ``BASE_IMAGE_NAME`` ("macos-tahoe-base"), since that string is itself a
+    substring of the full ``registry/repo@digest`` name an OCI pull is
+    actually cached under.
+    """
+    returncode, stdout, _stderr = await async_run_command(["tart", "list", "--format", "json"])
+    if returncode != 0:
+        return set()
+    entries = json.loads(stdout)
+    return {entry["Name"] for entry in entries}
+
+
+async def pull_base_image_if_missing(name: str = BASE_IMAGE_NAME, image_ref: str = BASE_IMAGE_REF) -> None:
+    """Ensure a locally-named *name* VM exists, pulling *image_ref* under that name if missing.
+
+    Uses ``tart clone <image_ref> <name>`` rather than ``tart pull
+    <image_ref>`` — verified empirically that ``tart pull`` caches the OCI
+    blob under its own full ``registry/repo@digest`` string, not a short
+    alias, so a bare ``tart clone <name> ...`` against that short name fails
+    with "the specified VM does not exist" even right after a successful
+    pull. ``tart clone`` accepts a remote reference as its source and pulls
+    it on a cache miss, so this both fetches and aliases it in one step.
+
+    Raises :exc:`VMError` if the clone/pull fails.
+    """
+    if name in await _local_vm_names():
+        return
+
+    logger.debug("Pulling base image %r as %r", image_ref, name)
+    returncode, _stdout, stderr = await async_run_command(["tart", "clone", image_ref, name], timeout=600)
+    if returncode != 0:
+        raise VMError(f"tart clone {image_ref!r} -> {name!r} failed (exit {returncode}): {stderr.strip()}")
 
 
 class TartVMManager:

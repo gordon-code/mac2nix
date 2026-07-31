@@ -56,3 +56,100 @@ jobs:
         env:
           MAC2NIX_BASE_VM: macos-tahoe-base
         run: make test-integration
+
+  # Runs on every pull_request, unconditional (not gated like the VM-based
+  # `integration` job above) — this plan's Key Decisions require every
+  # deliverable validated before merge, not after. No `needs:` on
+  # lint-and-test — runs in parallel. Inherits the workflow's default
+  # read-only GITHUB_TOKEN (no elevated permissions) since this job runs
+  # `nix build` against PR-supplied template content, including from forks.
+  #
+  # NOTE FOR WHOEVER MERGES THIS PR: this job needs to be added to the
+  # repository's branch-protection required-status-checks list manually via
+  # GitHub repo settings — a one-time change outside this workflow file's scope.
+  nix-integration:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: make install
+
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Install sops and age
+        run: brew install sops age
+
+      - name: Nix build integration tests
+        run: make test-nix
+
+  # Job-level (not workflow-level `on.pull_request.paths`) scoping: a workflow-level
+  # path filter leaves a required status check permanently "Waiting for status to be
+  # reported" on any PR that doesn't touch the filtered paths. A job-level skip
+  # reports a real, non-blocking "success" status instead.
+  detect-changes:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    outputs:
+      vm-relevant: ${{ steps.check.outputs.vm-relevant }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Detect VM-relevant changes
+        id: check
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}" HEAD)
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(src/mac2nix/generators/|src/mac2nix/templates/|src/mac2nix/vm/|tests/generators/|tests/vm/|tests/vm_fixtures\.py)'; then
+            echo "vm-relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "vm-relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Expensive (VM boot + fresh Nix install every run) and gated: only runs when
+  # detect-changes says the PR touches VM-relevant paths, and even then waits for a
+  # maintainer's manual approval via the vm-validated environment's required reviewer.
+  #
+  # NOTE FOR WHOEVER MERGES THIS PR: the `vm-validated` GitHub Environment and its
+  # required reviewer need to be configured once via repo settings — this is outside
+  # this workflow file's scope.
+  vm-integration:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.vm-relevant == 'true'
+    runs-on: macos-latest
+    environment: vm-validated
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Install tart
+        run: brew install cirruslabs/cli/tart
+
+      - name: Install sshpass
+        run: |
+          brew tap hudochenkov/sshpass
+          brew install sshpass
+
+      - name: Install sops and age
+        run: brew install sops age
+
+      # No Nix install needed on the CI host itself — Validator's whole flow (copy
+      # flake via SCP, bootstrap Nix, switch, re-scan) happens over SSH inside the
+      # VM, never locally. This deliberately does not use `make prewarm-vm`: per
+      # this project's own CI scope decision, it clones the raw macos-tahoe-base
+      # image and lets Validator._bootstrap_nix_darwin() install Nix fresh inside
+      # the VM every run.
+      - name: VM integration tests
+        run: make test-vm

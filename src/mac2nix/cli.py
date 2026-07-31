@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
+import re
 import time
 import uuid
 from collections import Counter
@@ -16,6 +18,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
+from mac2nix.generators.scaffold import add_host, init_framework
 from mac2nix.models.system_state import SystemState
 from mac2nix.orchestrator import run_scan
 from mac2nix.scan_report import ScannerOutcome, ScannerStatus, capture_scanner_logs, get_remediation_hint
@@ -205,6 +208,84 @@ def _vm_options(f: click.decorators.FC) -> click.decorators.FC:
 
 
 @main.command()
+@click.argument("output_dir", type=click.Path(path_type=Path))
+def init(output_dir: Path) -> None:
+    """Scaffold a host-less nix-darwin + home-manager + sops-nix framework."""
+    try:
+        init_framework(output_dir)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Framework scaffolded at {output_dir}")
+    click.echo("Next: mac2nix add-host --hostname <name> [--username <name>] to register a machine.")
+
+
+_HOSTNAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+_USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
+
+
+def _validate_hostname(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+    if not _HOSTNAME_RE.match(value):
+        msg = "hostname must match ^[a-z][a-z0-9-]*$ (lowercase alphanumeric and hyphens, starting with a letter)"
+        raise click.BadParameter(msg)
+    return value
+
+
+def _validate_username(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+    if not _USERNAME_RE.match(value):
+        msg = "username must match ^[a-z_][a-z0-9_-]*$"
+        raise click.BadParameter(msg)
+    return value
+
+
+@main.command("add-host")
+@click.argument("output_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--hostname",
+    required=True,
+    callback=_validate_hostname,
+    help="Hostname to register (lowercase alphanumeric + hyphens, starting with a letter).",
+)
+@click.option(
+    "--username",
+    default=getpass.getuser,
+    callback=_validate_username,
+    show_default="current OS user",
+    help="Account username for this host.",
+)
+@click.option(
+    "--system",
+    default="aarch64-darwin",
+    show_default=True,
+    type=click.Choice(["aarch64-darwin", "x86_64-darwin"]),
+    help="Darwin system double.",
+)
+def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str) -> None:
+    """Register a host with an existing mac2nix-scaffolded framework."""
+
+    def _confirm_backup(fingerprint: str) -> bool:
+        click.echo(f"Public key fingerprint: {fingerprint}")
+        return (
+            click.prompt("Type CONFIRMED once the private key has been backed up to a password manager", default="")
+            == "CONFIRMED"
+        )
+
+    try:
+        fingerprint = add_host(output_dir, hostname, username, system, confirm_backup=_confirm_backup)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    key_path = f"/Users/{username}/.config/sops/age/keys.txt"
+    click.echo(f"Host {hostname!r} registered (age key fingerprint: {fingerprint}).")
+    click.echo(f"Age key stored at {key_path} — make sure it's backed up somewhere safe.")
+    click.echo(f"Next: run `nix flake lock` inside {output_dir} before the first build for this host.")
+    click.echo(
+        "Reminder: push this repo as a PRIVATE GitHub repo — scan-derived configuration isn't vetted "
+        "for public-repo exposure the way sops-encrypted secrets are."
+    )
+
+
+@main.command()
 def generate() -> None:
     """Generate nix-darwin configuration from a scan snapshot."""
     click.echo("generate: not yet implemented")
@@ -223,10 +304,18 @@ def generate() -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Source SystemState JSON produced by 'mac2nix scan'.",
 )
+@click.option(
+    "--mac2nix-source",
+    default="github:gordon-code/mac2nix",
+    show_default=True,
+    help="mac2nix source the VM re-scans with — a flake ref, or a local checkout path (e.g. '.') "
+    "to validate not-yet-published code.",
+)
 @_vm_options
-def validate(
+def validate(  # noqa: PLR0913
     flake_path: Path,
     scan_file: Path,
+    mac2nix_source: str,
     base_vm: str,
     vm_user: str,
     vm_password: str,
@@ -245,7 +334,7 @@ def validate(
             clone_name = f"mac2nix-validate-{uuid.uuid4().hex[:8]}"
             await vm.clone(clone_name)
             await vm.start()
-            result = await Validator(vm).validate(flake_path, source_state)
+            result = await Validator(vm, mac2nix_source=mac2nix_source).validate(flake_path, source_state)
 
         if result.errors:
             click.echo("Validation errors:", err=True)

@@ -15,6 +15,8 @@ from mac2nix.models.system import NetworkConfig, SecurityState
 from mac2nix.models.system_state import SystemState
 from mac2nix.vm._utils import VMError
 from mac2nix.vm.validator import (
+    _NIX_PROFILE_SOURCE,
+    NIX_INSTALLER_URL,
     DomainScore,
     FidelityReport,
     Mismatch,
@@ -468,6 +470,28 @@ class TestValidatorCopyFlake:
 
 
 # ---------------------------------------------------------------------------
+# Validator._bootstrap_nix_darwin() — idempotency
+# ---------------------------------------------------------------------------
+
+
+class TestBootstrapIdempotency:
+    def test_skips_install_when_nix_already_present(self) -> None:
+        """When the profile-sourced `which nix` check succeeds, the install
+        commands (curl/chmod/installer) must never be invoked."""
+        vm = _make_vm(exec_result=(True, "", ""))
+
+        async def _run() -> None:
+            v = Validator(vm)
+            await v._bootstrap_nix_darwin()
+
+        asyncio.run(_run())
+
+        calls = [call.args[0] for call in vm.exec_command.call_args_list]
+        assert calls == [["bash", "-c", f"{_NIX_PROFILE_SOURCE} && which nix"]]
+        assert not any(NIX_INSTALLER_URL in " ".join(c) for c in calls)
+
+
+# ---------------------------------------------------------------------------
 # Validator.validate() — full pipeline
 # ---------------------------------------------------------------------------
 
@@ -540,17 +564,16 @@ class TestValidatorValidate:
         assert any("bootstrap" in e for e in result.errors)
 
     def test_rebuild_failure_returns_early(self) -> None:
-        # All bootstrap steps succeed, darwin-rebuild switch fails
-        call_count = 0
-
+        # Bootstrap succeeds (Nix reports already installed); rebuild switch fails.
+        # Keyed off command content, not call position, so it's insensitive to how
+        # many exec_command calls bootstrap itself makes.
         async def exec_side_effect(cmd, **_kw):
-            nonlocal call_count
-            call_count += 1
-            # mkdir(1) + curl(2) + chmod(3) + installer(4) + nix-darwin bootstrap(5) succeed
-            # darwin-rebuild switch (6th call) fails
-            if call_count <= 5:
-                return (True, "admin", "")
-            return (False, "", "nix-darwin build error")
+            joined = " ".join(cmd)
+            if "which nix" in joined:
+                return (True, "", "")  # idempotency check succeeds
+            if "nix-darwin -- switch" in joined:
+                return (False, "", "nix-darwin build error")
+            return (True, "admin", "")  # mkdir and any other step succeeds
 
         vm = _make_vm()
         vm.exec_command = AsyncMock(side_effect=exec_side_effect)

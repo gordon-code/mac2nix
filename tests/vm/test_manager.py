@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from mac2nix.vm._utils import VMConnectionError, VMError, VMTimeoutError
-from mac2nix.vm.manager import TartVMManager
+from mac2nix.vm.manager import BASE_IMAGE_NAME, BASE_IMAGE_REF, TartVMManager, pull_base_image_if_missing
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1010,3 +1011,77 @@ class TestContextManager:
                 # After exit, cleanup was called (stop + delete ran)
 
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# pull_base_image_if_missing()
+# ---------------------------------------------------------------------------
+
+
+class TestPullBaseImageIfMissing:
+    def test_skips_pull_when_name_present(self) -> None:
+        list_output = json.dumps([{"Name": BASE_IMAGE_NAME}, {"Name": "other-vm"}])
+        captured: list[list[str]] = []
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            captured.append(cmd)
+            return (0, list_output, "")
+
+        async def _run() -> None:
+            with patch("mac2nix.vm.manager.async_run_command", side_effect=recording_run):
+                await pull_base_image_if_missing(name=BASE_IMAGE_NAME, image_ref=BASE_IMAGE_REF)
+
+        asyncio.run(_run())
+        assert captured == [["tart", "list", "--format", "json"]]  # no clone call made
+
+    def test_pulls_when_name_absent(self) -> None:
+        list_output = json.dumps([{"Name": "other-vm"}])
+        captured: list[list[str]] = []
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            captured.append(cmd)
+            if cmd[:2] == ["tart", "list"]:
+                return (0, list_output, "")
+            return (0, "", "")
+
+        async def _run() -> None:
+            with patch("mac2nix.vm.manager.async_run_command", side_effect=recording_run):
+                await pull_base_image_if_missing(name=BASE_IMAGE_NAME, image_ref=BASE_IMAGE_REF)
+
+        asyncio.run(_run())
+        assert captured[-1] == ["tart", "clone", BASE_IMAGE_REF, BASE_IMAGE_NAME]
+
+    def test_pulls_when_only_full_digest_variant_present(self) -> None:
+        """A locally-cached OCI pull is named by its full `registry/repo@digest`
+        string, which contains BASE_IMAGE_NAME as a substring without actually
+        being it — matching must be exact-name, not substring."""
+        list_output = json.dumps([{"Name": f"ghcr.io/cirruslabs/{BASE_IMAGE_NAME}@sha256:deadbeef"}])
+        captured: list[list[str]] = []
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            captured.append(cmd)
+            if cmd[:2] == ["tart", "list"]:
+                return (0, list_output, "")
+            return (0, "", "")
+
+        async def _run() -> None:
+            with patch("mac2nix.vm.manager.async_run_command", side_effect=recording_run):
+                await pull_base_image_if_missing(name=BASE_IMAGE_NAME, image_ref=BASE_IMAGE_REF)
+
+        asyncio.run(_run())
+        assert captured[-1] == ["tart", "clone", BASE_IMAGE_REF, BASE_IMAGE_NAME]
+
+    def test_raises_vm_error_on_clone_failure(self) -> None:
+        list_output = json.dumps([])
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            if cmd[:2] == ["tart", "list"]:
+                return (0, list_output, "")
+            return (1, "", "no space left on device")
+
+        async def _run() -> None:
+            with patch("mac2nix.vm.manager.async_run_command", side_effect=recording_run):
+                await pull_base_image_if_missing(name=BASE_IMAGE_NAME, image_ref=BASE_IMAGE_REF)
+
+        with pytest.raises(VMError, match="tart clone"):
+            asyncio.run(_run())
