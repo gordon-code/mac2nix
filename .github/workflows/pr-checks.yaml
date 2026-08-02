@@ -30,38 +30,8 @@ jobs:
       - name: Test
         run: make test
 
-  integration:
-    needs: lint-and-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies
-        run: make install
-
-      - name: Install tart
-        run: |
-          brew tap cirruslabs/cli
-          brew trust cirruslabs/cli
-          brew install cirruslabs/cli/tart
-
-      - name: Install sshpass
-        run: |
-          brew tap hudochenkov/sshpass
-          brew install sshpass
-
-      - name: Integration tests
-        env:
-          MAC2NIX_BASE_VM: macos-tahoe-base
-        run: make test-integration
-
   # Runs on every pull_request, unconditional (not gated like the VM-based
-  # `integration` job above) — this plan's Key Decisions require every
+  # `vm-integration` job below) — this plan's Key Decisions require every
   # deliverable validated before merge, not after. No `needs:` on
   # lint-and-test — runs in parallel. Inherits the workflow's default
   # read-only GITHUB_TOKEN (no elevated permissions) since this job runs
@@ -119,6 +89,15 @@ jobs:
   # detect-changes says the PR touches VM-relevant paths, and even then waits for a
   # maintainer's manual approval via the vm-validated environment's required reviewer.
   #
+  # Runs both the `integration`-marked tests (raw TartVMManager lifecycle and
+  # FileSystemComparator diffing — pre-existing VM-control-layer tests, formerly
+  # their own post-merge-only, ungated job) and the `nix_vm`-marked tests (real
+  # apply-and-verify: does a *generated* nix-darwin config actually activate).
+  # Each suite still clones/manages its own VM independently (different fixtures,
+  # not sharing one boot) — merged into one job so both get the identical
+  # tart/sshpass/sops/age setup, one approval gate, and pre-merge timing, instead
+  # of `integration` being the sole remaining post-merge-only, ungated tier.
+  #
   # NOTE FOR WHOEVER MERGES THIS PR: the `vm-validated` GitHub Environment and its
   # required reviewer need to be configured once via repo settings — this is outside
   # this workflow file's scope.
@@ -158,4 +137,4 @@ jobs:
       # image and lets Validator._bootstrap_nix_darwin() install Nix fresh inside
       # the VM every run.
       - name: VM integration tests
-        run: make test-vm
+        run: make test-vm test-integration
