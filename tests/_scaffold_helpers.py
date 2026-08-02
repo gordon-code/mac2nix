@@ -13,8 +13,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def _has_age_keygen() -> bool:
+    return shutil.which("age-keygen") is not None
+
+
 def _has_add_host_crypto_deps() -> bool:
-    return shutil.which("age-keygen") is not None and shutil.which("sops") is not None
+    return _has_age_keygen() and shutil.which("sops") is not None
 
 
 @contextlib.contextmanager

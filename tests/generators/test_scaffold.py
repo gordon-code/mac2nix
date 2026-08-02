@@ -16,7 +16,7 @@ import yaml
 
 from mac2nix.generators import Mac2NixError
 from mac2nix.generators.scaffold import ScaffoldError, add_host, generate_age_key, init_framework
-from tests._scaffold_helpers import _has_add_host_crypto_deps, _redirect_age_keys
+from tests._scaffold_helpers import _has_add_host_crypto_deps, _has_age_keygen, _redirect_age_keys
 
 _EXPECTED_FRAMEWORK_FILES = [
     ".gitignore",
@@ -104,6 +104,13 @@ class TestInitFramework:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def require_age_keygen() -> None:
+    if not _has_age_keygen():
+        pytest.skip("age-keygen not on PATH")
+
+
+@pytest.mark.usefixtures("require_age_keygen")
 class TestGenerateAgeKey:
     def test_permissions_and_fingerprint(self, tmp_path: Path) -> None:
         key_dir = tmp_path / "keys"
