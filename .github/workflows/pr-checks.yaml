@@ -45,7 +45,10 @@ jobs:
         run: make install
 
       - name: Install tart
-        run: brew install cirruslabs/cli/tart
+        run: |
+          brew tap cirruslabs/cli
+          brew trust cirruslabs/cli
+          brew install cirruslabs/cli/tart
 
       - name: Install sshpass
         run: |
@@ -135,7 +138,10 @@ jobs:
         run: make install
 
       - name: Install tart
-        run: brew install cirruslabs/cli/tart
+        run: |
+          brew tap cirruslabs/cli
+          brew trust cirruslabs/cli
+          brew install cirruslabs/cli/tart
 
       - name: Install sshpass
         run: |
