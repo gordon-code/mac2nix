@@ -30,8 +30,8 @@ jobs:
       - name: Test
         run: make test
 
-  # Runs on every pull_request, unconditional (not gated like the VM-based
-  # `vm-integration` job below) — this plan's Key Decisions require every
+  # Runs on every pull_request, unconditional (not gated like the
+  # `nix-darwin-switch` job below) — this plan's Key Decisions require every
   # deliverable validated before merge, not after. No `needs:` on
   # lint-and-test — runs in parallel. Inherits the workflow's default
   # read-only GITHUB_TOKEN (no elevated permissions) since this job runs
@@ -85,23 +85,33 @@ jobs:
             echo "vm-relevant=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Expensive (VM boot + fresh Nix install every run) and gated: only runs when
-  # detect-changes says the PR touches VM-relevant paths, and even then waits for a
-  # maintainer's manual approval via the vm-validated environment's required reviewer.
+  # Real, invasive (applies a genuine nix-darwin switch to the runner itself) and
+  # gated: only runs when detect-changes says the PR touches VM/generator-relevant
+  # paths, and even then waits for a maintainer's manual approval via the
+  # vm-validated environment's required reviewer.
   #
-  # Runs both the `integration`-marked tests (raw TartVMManager lifecycle and
-  # FileSystemComparator diffing — pre-existing VM-control-layer tests, formerly
-  # their own post-merge-only, ungated job) and the `nix_vm`-marked tests (real
-  # apply-and-verify: does a *generated* nix-darwin config actually activate).
-  # Each suite still clones/manages its own VM independently (different fixtures,
-  # not sharing one boot) — merged into one job so both get the identical
-  # tart/sshpass/sops/age setup, one approval gate, and pre-merge timing, instead
-  # of `integration` being the sole remaining post-merge-only, ungated tier.
+  # Nested macOS virtualization is categorically unsupported on GitHub-hosted
+  # runners (confirmed via GitHub's own docs — an Apple Virtualization Framework
+  # limitation, not a Tart-specific one: `tart run` exits immediately with no
+  # boot at all), so a Tart-VM-based apply-and-verify check — what this job
+  # originally did, and what `tests/vm/test_scaffold_vm.py` still does for local
+  # development on real Apple Silicon hardware — cannot run here. Instead this
+  # job applies the switch directly to the runner itself, which is safe only
+  # because the runner is already fully disposable (destroyed after the job).
+  # See tests/generators/test_scaffold_switch_native.py's own docstring for the
+  # full safety gating (skips unless GITHUB_ACTIONS=true, fails loudly rather
+  # than reusing a real key that shouldn't exist on a fresh runner).
+  #
+  # test_integration.py's TartVMManager-lifecycle/FileSystemComparator tests are
+  # deliberately NOT run here — they test the VM-control layer itself, which
+  # needs an actual VM boot regardless of what's being tested, so they can never
+  # run on any GitHub-hosted runner. They remain a local-only check
+  # (`make test-integration`, requires real Tart-capable hardware).
   #
   # NOTE FOR WHOEVER MERGES THIS PR: the `vm-validated` GitHub Environment and its
   # required reviewer need to be configured once via repo settings — this is outside
   # this workflow file's scope.
-  vm-integration:
+  nix-darwin-switch:
     needs: detect-changes
     if: needs.detect-changes.outputs.vm-relevant == 'true'
     runs-on: macos-latest
@@ -116,25 +126,10 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - name: Install tart
-        run: |
-          brew tap cirruslabs/cli
-          brew trust cirruslabs/cli
-          brew install cirruslabs/cli/tart
-
-      - name: Install sshpass
-        run: |
-          brew tap hudochenkov/sshpass
-          brew install sshpass
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
       - name: Install sops and age
         run: brew install sops age
 
-      # No Nix install needed on the CI host itself — Validator's whole flow (copy
-      # flake via SCP, bootstrap Nix, switch, re-scan) happens over SSH inside the
-      # VM, never locally. This deliberately does not use `make prewarm-vm`: per
-      # this project's own CI scope decision, it clones the raw macos-tahoe-base
-      # image and lets Validator._bootstrap_nix_darwin() install Nix fresh inside
-      # the VM every run.
-      - name: VM integration tests
-        run: make test-vm test-integration
+      - name: Real nix-darwin switch (applied to this disposable runner)
+        run: make test-nix-darwin-switch

@@ -82,13 +82,14 @@ python_functions = "test_*"
 addopts = [
     "--strict-markers",
     "--tb=short",
-    "-m", "not integration and not nix_vm and not nix_build",
+    "-m", "not integration and not nix_vm and not nix_build and not nix_darwin_switch",
 ]
 markers = [
     "integration: real VM tests — require tart + sshpass + base VM image",
     "nix: nix-instantiate syntax validation — require Nix on PATH",
     "nix_vm: real VM-based apply-and-verify tests — require tart",
     "nix_build: real nix flake lock/build tests — never skipped, require nix + age + sops + network",
+    "nix_darwin_switch: real nix-darwin switch applied to the running machine — CI-only, skips unless GITHUB_ACTIONS=true",
 ]
 cache_dir = ".cache/pytest"
 

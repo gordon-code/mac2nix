@@ -33,6 +33,11 @@ darwin.lib.darwinSystem {
           "homebrew/homebrew-cask" = homebrew-cask;
         };
         mutableTaps = false;
+        # This host's own Homebrew may already exist and be populated —
+        # mac2nix's whole premise is migrating a Mac that's already running
+        # Homebrew, not a bare machine. Without this, nix-homebrew expects to
+        # own an empty prefix and fails against any pre-existing install.
+        autoMigrate = true;
       };
 
       home-manager.useGlobalPkgs = true;

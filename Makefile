@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: install lint format typecheck test test-integration test-vm test-nix prewarm-vm pull-base-vm test-quick clean all prek-install prek
+.PHONY: install lint format typecheck test test-integration test-vm test-nix test-nix-darwin-switch prewarm-vm pull-base-vm test-quick clean all prek-install prek
 
 install:
 	uv sync
@@ -41,6 +41,11 @@ test-vm: pull-base-vm
 
 test-nix:
 	uv run pytest -m nix_build --tb=long
+
+# CI-only — skips unless GITHUB_ACTIONS=true (see the test module's own docstring).
+# Never invoke this on a real machine; it applies a genuine nix-darwin switch.
+test-nix-darwin-switch:
+	uv run pytest -m nix_darwin_switch --tb=long
 
 prewarm-vm:
 	uv run python scripts/prewarm_vm.py
