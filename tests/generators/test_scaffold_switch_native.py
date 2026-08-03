@@ -83,9 +83,20 @@ def test_scaffold_switches_for_real_natively(real_age_key: Path, tmp_path: Path)
 
     nix_bin = shutil.which("nix")
     assert nix_bin is not None, "nix must be installed on this runner before this test can apply anything"
+    sudo_bin = shutil.which("sudo")
+    assert sudo_bin is not None, "sudo must be available to run nix-darwin's system activation"
 
     async def _run() -> tuple[int, str, str]:
+        # nix-darwin's system activation now always runs as root (per
+        # `system.primaryUser`'s own purpose) — `-n` fails fast with a clear
+        # error instead of hanging for the full timeout if passwordless sudo
+        # isn't actually available, rather than silently waiting on a prompt
+        # that will never come. The absolute `nix_bin` path (not a bare `nix`
+        # on PATH) avoids sudo's restricted `secure_path` not including
+        # wherever Nix installed its own binaries.
         proc = await asyncio.create_subprocess_exec(
+            sudo_bin,
+            "-n",
             nix_bin,
             "run",
             "nix-darwin",
@@ -101,4 +112,6 @@ def test_scaffold_switches_for_real_natively(real_age_key: Path, tmp_path: Path)
         return proc.returncode or 0, stdout.decode(), stderr.decode()
 
     returncode, out, err = asyncio.run(_run())
-    assert returncode == 0, f"nix run nix-darwin -- switch failed (exit {returncode}):\nstdout:\n{out}\nstderr:\n{err}"
+    assert returncode == 0, (
+        f"sudo nix run nix-darwin -- switch failed (exit {returncode}):\nstdout:\n{out}\nstderr:\n{err}"
+    )
