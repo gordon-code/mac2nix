@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 from mac2nix.generators.scaffold import add_host, init_framework
+from tests._scaffold_helpers import _nix_extra_access_tokens_args
 
 pytestmark = pytest.mark.nix_darwin_switch
 
@@ -86,6 +87,12 @@ def test_scaffold_switches_for_real_natively(real_age_key: Path, tmp_path: Path)
     sudo_bin = shutil.which("sudo")
     assert sudo_bin is not None, "sudo must be available to run nix-darwin's system activation"
 
+    # Placed immediately after nix_bin, before the `run` subcommand and well
+    # before `--` — --extra-access-tokens is a nix-level common flag, and
+    # anything after `--` belongs to the invoked nix-darwin program instead,
+    # not to nix itself, so it must not land there.
+    token_args = _nix_extra_access_tokens_args()
+
     async def _run() -> tuple[int, str, str]:
         # nix-darwin's system activation now always runs as root (per
         # `system.primaryUser`'s own purpose) — `-n` fails fast with a clear
@@ -93,11 +100,15 @@ def test_scaffold_switches_for_real_natively(real_age_key: Path, tmp_path: Path)
         # isn't actually available, rather than silently waiting on a prompt
         # that will never come. The absolute `nix_bin` path (not a bare `nix`
         # on PATH) avoids sudo's restricted `secure_path` not including
-        # wherever Nix installed its own binaries.
+        # wherever Nix installed its own binaries. sudo strips the calling
+        # environment by default, so --extra-access-tokens is passed as an
+        # explicit argument rather than via NIX_CONFIG, which wouldn't survive
+        # the elevation.
         proc = await asyncio.create_subprocess_exec(
             sudo_bin,
             "-n",
             nix_bin,
+            *token_args,
             "run",
             "nix-darwin",
             "--",

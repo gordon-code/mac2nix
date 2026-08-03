@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 
 from mac2nix.generators.scaffold import add_host, init_framework
-from tests._scaffold_helpers import _redirect_age_keys
+from tests._scaffold_helpers import _nix_extra_access_tokens_args, _redirect_age_keys
 
 pytestmark = pytest.mark.nix_build
 
@@ -48,13 +48,14 @@ def test_scaffold_builds_for_real(tmp_path: Path) -> None:
     """init_framework() + add_host() must produce a flake that actually `nix build`s."""
     output_dir = tmp_path / "mac2nix-scaffold"
     username = getpass.getuser()
+    token_args = _nix_extra_access_tokens_args()
 
     init_framework(output_dir)
     with _redirect_age_keys(tmp_path / "age-keys"):
         add_host(output_dir, _HOSTNAME, username, confirm_backup=lambda _fingerprint: True)
 
-    lock_result = subprocess.run(
-        ["nix", "flake", "lock"],  # noqa: S607
+    lock_result = subprocess.run(  # noqa: S603
+        ["nix", "flake", "lock", *token_args],  # noqa: S607
         cwd=output_dir,
         capture_output=True,
         text=True,
@@ -63,7 +64,7 @@ def test_scaffold_builds_for_real(tmp_path: Path) -> None:
     assert lock_result.returncode == 0, f"nix flake lock failed (exit {lock_result.returncode}):\n{lock_result.stderr}"
 
     build_result = subprocess.run(  # noqa: S603
-        ["nix", "build", f".#darwinConfigurations.{_HOSTNAME}.system", "--no-link"],  # noqa: S607
+        ["nix", "build", f".#darwinConfigurations.{_HOSTNAME}.system", "--no-link", *token_args],  # noqa: S607
         cwd=output_dir,
         capture_output=True,
         text=True,

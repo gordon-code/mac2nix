@@ -7,10 +7,32 @@ name) — imported by tests/cli/test_add_host.py and tests/generators/test_scaff
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
+
+
+def _nix_extra_access_tokens_args() -> list[str]:
+    """Extra `nix` CLI args authenticating `github:` flake-input fetches.
+
+    Without this, Nix's own flake-input resolution hits GitHub's REST API
+    unauthenticated (e.g. resolving `github:nix-darwin/nix-darwin` to a
+    commit) — capped at 60/hr *per shared egress IP*, not per caller, so on
+    GitHub-hosted runners this pool is exhausted by unrelated traffic from
+    other customers on the same NAT'd IP, independent of how many requests
+    *we've* made. Passed as an explicit CLI flag rather than via NIX_CONFIG
+    or a nix.conf file: `sudo` strips environment variables by default
+    (would need `-E`, itself a broader change), and multi-user/daemon Nix
+    installs don't reliably pick up client-side NIX_CONFIG for the daemon's
+    own fetches. A CLI flag applies directly to the invoked process either
+    way. Returns an empty list (fails open, not closed — matches this
+    project's other real-network tests) if GITHUB_TOKEN isn't set, since
+    that should only happen outside GitHub Actions.
+    """
+    token = os.environ.get("GITHUB_TOKEN")
+    return ["--extra-access-tokens", f"github.com={token}"] if token else []
 
 
 def _has_age_keygen() -> bool:

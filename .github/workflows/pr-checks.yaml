@@ -58,7 +58,14 @@ jobs:
       - name: Install sops and age
         run: brew install sops age
 
+      # Authenticates nix's own github: flake-input fetches (see
+      # tests/_scaffold_helpers.py's _nix_extra_access_tokens_args() for why
+      # this matters on a shared, unauthenticated-rate-limited runner IP
+      # pool). Default read-only GITHUB_TOKEN — no elevated permissions,
+      # matches this job's existing security posture against fork PRs.
       - name: Nix build integration tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: make test-nix
 
   # Job-level (not workflow-level `on.pull_request.paths`) scoping: a workflow-level
@@ -165,5 +172,12 @@ jobs:
       - name: Remove pre-existing Homebrew installation
         run: sudo rm -rf /opt/homebrew
 
+      # See the nix-integration job's own comment on GITHUB_TOKEN — same
+      # reasoning applies here, for this job's own github: flake-input
+      # fetches during the real switch (which sudo's env-stripping means
+      # can't just be set via NIX_CONFIG at the job level; the test itself
+      # threads this through as an explicit nix CLI argument instead).
       - name: Real nix-darwin switch (applied to this disposable runner)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: make test-nix-darwin-switch
