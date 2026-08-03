@@ -131,5 +131,20 @@ jobs:
       - name: Install sops and age
         run: brew install sops age
 
+      # nix-darwin refuses to overwrite any /etc file it doesn't already manage
+      # and finds with unrecognized content — a safety guard against silently
+      # clobbering pre-existing system config, not a mac2nix-specific problem.
+      # DeterminateSystems/nix-installer-action itself writes nix.custom.conf,
+      # which nix-darwin's own Nix management then wants to own — exactly the
+      # scenario nix-darwin's own error message describes, with its own
+      # suggested fix (rename it out of the way first). A real user migrating a
+      # Mac that already has Nix installed independently of mac2nix would hit
+      # this identically and need the same one-time manual step.
+      - name: Move pre-existing /etc/nix/nix.custom.conf out of nix-darwin's way
+        run: |
+          if [ -f /etc/nix/nix.custom.conf ]; then
+            sudo mv /etc/nix/nix.custom.conf /etc/nix/nix.custom.conf.before-nix-darwin
+          fi
+
       - name: Real nix-darwin switch (applied to this disposable runner)
         run: make test-nix-darwin-switch
