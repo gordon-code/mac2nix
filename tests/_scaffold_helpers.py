@@ -35,6 +35,32 @@ def _nix_extra_access_tokens_args() -> list[str]:
     return ["--extra-access-tokens", f"github.com={token}"] if token else []
 
 
+def _nix_config_env_prefix_args() -> list[str]:
+    """`env NIX_CONFIG=...` argv prefix authenticating nix invocations reached through `sudo`.
+
+    `_nix_extra_access_tokens_args()`'s CLI flag only configures the single
+    `nix` process it's passed to. `sudo nix run nix-darwin -- switch` execs
+    `darwin-rebuild`, which spawns its own separate, fresh `nix build`/`nix
+    flake lock` subprocess to resolve the *target flake's own* inputs
+    (nixpkgs, home-manager, sops-nix) — that child process never sees a CLI
+    flag given to its parent. An environment variable does survive fork/exec
+    down that whole chain, which is why this returns an `env NAME=value`
+    argv prefix (to place directly after `sudo -n`, before the real command)
+    instead of a plain env var: `sudo` resets almost the entire environment
+    of the process *it* execs by default, but running `env` as the thing sudo
+    execs sidesteps that — `env` is just a normal program that sets a var in
+    *its own* clean environment before exec-ing the real command, and that
+    var then flows down normally to every descendant from there.
+    """
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return []
+    env_bin = shutil.which("env")
+    if env_bin is None:
+        return []
+    return [env_bin, f"NIX_CONFIG=extra-access-tokens = github.com={token}"]
+
+
 def _has_age_keygen() -> bool:
     return shutil.which("age-keygen") is not None
 
