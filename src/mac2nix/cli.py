@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import getpass
 import re
+import shutil
+import subprocess
 import time
 import uuid
 from collections import Counter
@@ -18,7 +20,8 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-from mac2nix.generators.scaffold import add_host, init_framework
+from mac2nix import onepassword
+from mac2nix.generators.scaffold import add_host, age_key_path, init_framework
 from mac2nix.models.system_state import SystemState
 from mac2nix.orchestrator import run_scan
 from mac2nix.scan_report import ScannerOutcome, ScannerStatus, capture_scanner_logs, get_remediation_hint
@@ -222,20 +225,63 @@ def init(output_dir: Path) -> None:
 
 _HOSTNAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
+_SYSTEM_CHOICES = ("aarch64-darwin", "x86_64-darwin")
 
 
-def _validate_hostname(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+def _check_hostname(value: str) -> str:
     if not _HOSTNAME_RE.match(value):
         msg = "hostname must match ^[a-z][a-z0-9-]*$ (lowercase alphanumeric and hyphens, starting with a letter)"
         raise click.BadParameter(msg)
     return value
 
 
-def _validate_username(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+def _check_username(value: str) -> str:
     if not _USERNAME_RE.match(value):
         msg = "username must match ^[a-z_][a-z0-9_-]*$"
         raise click.BadParameter(msg)
     return value
+
+
+def _validate_hostname(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+    return _check_hostname(value)
+
+
+def _validate_username(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+    return _check_username(value)
+
+
+def _confirm_or_default(prompt: str, *, default: bool) -> bool:
+    """Like `click.confirm()`, but resolves to *default* on EOF instead of aborting.
+
+    For the two trailing, non-destructive prompts (register another host,
+    run `nix flake lock` now) — by the time these run, any host registered
+    earlier in this invocation is already fully committed, so an exhausted
+    stdin here should behave like silently declining, not like aborting a
+    command that already did its real work.
+    """
+    try:
+        return click.confirm(prompt, default=default)
+    except EOFError:
+        return default
+
+
+def _run_nix_flake_lock(output_dir: Path) -> None:
+    """Run `nix flake lock` in *output_dir*, streaming its real output live.
+
+    A small, separately-named wrapper (rather than inlining the subprocess
+    call at its call site) so tests can patch just this one call without
+    touching the shared `subprocess` module object — patching
+    `subprocess.run` globally would also intercept scaffold.py's real
+    `age-keygen`/`sops` calls made earlier in the same command invocation.
+
+    Raises :exc:`click.ClickException` if `nix` isn't on PATH or the lock
+    fails.
+    """
+    if shutil.which("nix") is None:
+        raise click.ClickException("nix is not installed or not on PATH")
+    result = subprocess.run(["nix", "flake", "lock"], cwd=output_dir, check=False)  # noqa: S607
+    if result.returncode != 0:
+        raise click.ClickException(f"nix flake lock failed (exit {result.returncode})")
 
 
 @main.command("add-host")
@@ -257,31 +303,70 @@ def _validate_username(_ctx: click.Context, _param: click.Parameter, value: str)
     "--system",
     default="aarch64-darwin",
     show_default=True,
-    type=click.Choice(["aarch64-darwin", "x86_64-darwin"]),
+    type=click.Choice(_SYSTEM_CHOICES),
     help="Darwin system double.",
 )
-def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str) -> None:
+@click.option(
+    "--op-vault",
+    default=None,
+    help="Back up the new age key to this 1Password vault via `op` (verified by read-back) instead of a manual "
+    "confirmation. Falls back to the manual confirmation if `op` is unavailable, unauthenticated, or the "
+    "backup/verify fails.",
+)
+def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op_vault: str | None) -> None:
     """Register a host with an existing mac2nix-scaffolded framework."""
 
-    def _confirm_backup(fingerprint: str) -> bool:
+    def _confirm_backup(fingerprint: str, current_username: str, current_hostname: str) -> bool:
         click.echo(f"Public key fingerprint: {fingerprint}")
-        return (
-            click.prompt("Type CONFIRMED once the private key has been backed up to a password manager", default="")
-            == "CONFIRMED"
-        )
+        if op_vault:
+            title = f"mac2nix age key — {current_hostname}/{current_username}"
+            try:
+                item_id = onepassword.store_age_key(age_key_path(current_username), vault=op_vault, title=title)
+            except onepassword.OnePasswordError as exc:
+                click.echo(f"1Password backup failed ({exc}) — falling back to manual confirmation.")
+            else:
+                click.echo(f"Backed up to 1Password vault {op_vault!r} (item {item_id}), verified by read-back.")
+                return True
+        while not click.confirm("Have you backed up the private key to a password manager?", default=False):
+            click.echo("This key cannot be recovered if lost — please back it up before continuing.")
+        return True
 
-    try:
-        fingerprint = add_host(output_dir, hostname, username, system, confirm_backup=_confirm_backup)
-    except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
+    def _register_one(current_hostname: str, current_username: str, current_system: str) -> str:
+        try:
+            fingerprint = add_host(
+                output_dir,
+                current_hostname,
+                current_username,
+                current_system,
+                confirm_backup=lambda fp: _confirm_backup(fp, current_username, current_hostname),
+            )
+        except EOFError:
+            raise
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
 
-    key_path = f"/Users/{username}/.config/sops/age/keys.txt"
-    click.echo(f"Host {hostname!r} registered (age key fingerprint: {fingerprint}).")
-    click.echo(f"Age key stored at {key_path} — make sure it's backed up somewhere safe.")
-    click.echo(f"Next: run `nix flake lock` inside {output_dir} before the first build for this host.")
+        key_path = age_key_path(current_username)
+        click.echo(f"Host {current_hostname!r} registered (age key fingerprint: {fingerprint}).")
+        click.echo(f"Age key stored at {key_path} — make sure it's backed up somewhere safe.")
+        return fingerprint
+
+    _register_one(hostname, username, system)
+
+    while _confirm_or_default("Register another host now?", default=False):
+        next_hostname = click.prompt("Hostname", value_proc=_check_hostname)
+        next_username = click.prompt("Username", default=getpass.getuser(), value_proc=_check_username)
+        next_system = click.prompt("System", default=system, type=click.Choice(_SYSTEM_CHOICES), show_default=True)
+        _register_one(next_hostname, next_username, next_system)
+
+    if _confirm_or_default("Run `nix flake lock` now?", default=False):
+        _run_nix_flake_lock(output_dir)
+    else:
+        click.echo(f"Next: run `nix flake lock` inside {output_dir} before the first build for this host.")
+
     click.echo(
-        "Reminder: push this repo as a PRIVATE GitHub repo — scan-derived configuration isn't vetted "
-        "for public-repo exposure the way sops-encrypted secrets are."
+        "Reminder: push this repo as a PRIVATE GitHub repo — sops-nix keeps the actual secrets encrypted, "
+        "but each host's hostname/username are embedded in flake.nix/configuration.nix as plain, "
+        "unencrypted metadata."
     )
 
 

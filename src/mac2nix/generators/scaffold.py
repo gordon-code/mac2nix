@@ -86,6 +86,17 @@ def _age_key_path(username: str, key_dir: Path | None = None) -> Path:
     return (key_dir or Path(f"/Users/{username}") / ".config" / "sops" / "age") / "keys.txt"
 
 
+def age_key_path(username: str) -> Path:
+    """Public accessor for *username*'s real sops-nix age key path.
+
+    Exists so callers outside this module (the CLI, `mac2nix.onepassword`)
+    share this exact construction instead of independently duplicating the
+    `/Users/<username>/.config/sops/age/keys.txt` literal and risking the
+    two silently drifting apart.
+    """
+    return _age_key_path(username)
+
+
 def _write_host_config(host_dir: Path, hostname: str, username: str) -> None:
     host_dir.mkdir(parents=True)
     template = _read_template("hosts", "darwin", "configuration.nix")
