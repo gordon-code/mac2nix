@@ -125,6 +125,18 @@ def test_scaffold_switches_for_real(
         if not ok:
             raise VMError(f"Failed to move aside /etc/nix/nix.custom.conf: {err.strip()}")
 
+        # macos-tahoe-base ships with a pre-existing Homebrew install.
+        # nix-homebrew's autoMigrate can't cleanly adopt one with real content
+        # across multiple taps — same cascading conflict already root-caused
+        # and fixed the same way in CI's nix-darwin-switch job (an existing
+        # Library/Taps directory, then a formula whose originating tap had
+        # just been removed). Wiping it first lets nix-homebrew do a normal
+        # fresh install instead. Nothing in this test needs Homebrew itself —
+        # Nix comes from _bootstrap_nix_darwin() above, independent of brew.
+        ok, _out, err = await nix_darwin_vm.exec_command(["sudo", "rm", "-rf", "/opt/homebrew"], timeout=60)
+        if not ok:
+            raise VMError(f"Failed to remove pre-existing Homebrew: {err.strip()}")
+
         # nix-darwin's system activation now always runs as root (per
         # system.primaryUser's own purpose) — plain `nix run` fails with
         # "system activation must now be run as root". `sudo -n` fails fast
