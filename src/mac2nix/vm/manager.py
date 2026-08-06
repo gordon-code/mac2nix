@@ -186,7 +186,7 @@ class TartVMManager:
         await self.wait_ready()
         await self._ensure_dns_resolves()
 
-    async def _ensure_dns_resolves(self) -> None:
+    async def _ensure_dns_resolves(self, max_attempts: int = 3) -> None:
         """Point the guest's DNS at a public resolver, bypassing Tart's own gateway.
 
         Verified empirically against a real VM: Tart's vmnet-provided gateway
@@ -202,16 +202,30 @@ class TartVMManager:
         "Ethernet" is Tart's macOS base images' one consistent network
         service name (a single virtio-net interface) — not dynamically
         discovered, since every base image this project targets uses it.
-        Raises :exc:`VMError` if the override itself fails to apply, since a
-        broken guest resolver would otherwise surface later as a much more
-        confusing "could not resolve host" failure from whatever real
-        command runs next.
+
+        Retries on failure like :meth:`wait_ready` does for the same reason:
+        reproduced empirically, a VM can briefly reject the very same SSH
+        credentials moments after `wait_ready()`'s own check just succeeded
+        with them (macOS first-boot account/password setup finishing shortly
+        after sshd starts accepting connections) — a single-shot call here
+        would throw away `wait_ready()`'s own tolerance for that exact class
+        of boot-timing flakiness. Raises :exc:`VMError` if every attempt
+        fails, since a broken guest resolver would otherwise surface later as
+        a much more confusing "could not resolve host" failure from whatever
+        real command runs next.
         """
-        success, _out, err = await self.exec_command(
-            ["sudo", "networksetup", "-setdnsservers", "Ethernet", "1.1.1.1"], timeout=15
-        )
-        if not success:
-            raise VMError(f"Failed to configure guest DNS resolver: {err.strip()}")
+        err = ""
+        for attempt in range(max_attempts):
+            success, _out, err = await self.exec_command(
+                ["sudo", "networksetup", "-setdnsservers", "Ethernet", "1.1.1.1"], timeout=15
+            )
+            if success:
+                return
+            logger.debug("DNS configuration attempt %d/%d failed: %s", attempt + 1, max_attempts, err.strip())
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(5)
+
+        raise VMError(f"Failed to configure guest DNS resolver: {err.strip()}")
 
     async def wait_ready(self, max_attempts: int = 10) -> None:
         """Poll until the VM has an IP and accepts SSH connections.

@@ -343,14 +343,37 @@ class TestEnsureDnsResolves:
         asyncio.run(_run())
         assert captured_cmd == ["sudo", "networksetup", "-setdnsservers", "Ethernet", "1.1.1.1"]
 
-    def test_failure_raises_vm_error(self) -> None:
+    def test_failure_raises_vm_error_after_exhausting_retries(self) -> None:
         async def _run() -> None:
             mgr = _cloned_manager("dns-vm")
-            with patch.object(mgr, "exec_command", new=AsyncMock(return_value=(False, "", "no such service"))):
+            with (
+                patch.object(mgr, "exec_command", new=AsyncMock(return_value=(False, "", "no such service"))),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
                 await mgr._ensure_dns_resolves()
 
         with pytest.raises(VMError, match="Failed to configure guest DNS resolver"):
             asyncio.run(_run())
+
+    def test_retries_and_succeeds_after_transient_failure(self) -> None:
+        attempts: list[int] = []
+
+        async def flaky_exec_command(cmd: list[str], **_kw: object) -> tuple[bool, str, str]:
+            attempts.append(1)
+            if len(attempts) < 2:
+                return False, "", "Permission denied, please try again."
+            return True, "", ""
+
+        async def _run() -> None:
+            mgr = _cloned_manager("dns-vm")
+            with (
+                patch.object(mgr, "exec_command", side_effect=flaky_exec_command),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                await mgr._ensure_dns_resolves()
+
+        asyncio.run(_run())
+        assert len(attempts) == 2
 
 
 # ---------------------------------------------------------------------------

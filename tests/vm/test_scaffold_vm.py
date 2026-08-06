@@ -110,10 +110,18 @@ def test_scaffold_switches_for_real(
         await _copy_age_key_to_vm(nix_darwin_vm, local_key_path, _VM_USERNAME)
         await validator._bootstrap_nix_darwin()
 
+        # nix-darwin's system activation now always runs as root (per
+        # system.primaryUser's own purpose) — plain `nix run` fails with
+        # "system activation must now be run as root". `sudo -n` fails fast
+        # rather than hanging on a password prompt if passwordless sudo isn't
+        # actually available. `$(command -v nix)` resolves nix's absolute
+        # path in the current (profile-sourced) shell *before* handing it to
+        # sudo, since sudo's own secure_path won't include wherever the
+        # nix-daemon profile put it on PATH.
         switch_cmd = (
             f"cd {validator._REMOTE_FLAKE_DIR}"
             " && . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
-            f" && nix run nix-darwin -- switch --flake .#{_HOSTNAME}"
+            f" && sudo -n $(command -v nix) run nix-darwin -- switch --flake .#{_HOSTNAME}"
         )
         return await nix_darwin_vm.exec_command(["bash", "-c", switch_cmd], timeout=900)
 
