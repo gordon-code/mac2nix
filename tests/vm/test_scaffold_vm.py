@@ -110,6 +110,21 @@ def test_scaffold_switches_for_real(
         await _copy_age_key_to_vm(nix_darwin_vm, local_key_path, _VM_USERNAME)
         await validator._bootstrap_nix_darwin()
 
+        # nix-darwin refuses to overwrite any /etc file it doesn't already
+        # manage and finds with unrecognized content — the Determinate Nix
+        # installer run by _bootstrap_nix_darwin() above writes its own
+        # /etc/nix/nix.custom.conf, which nix-darwin's own Nix management
+        # then wants to own. Same conflict, same fix as the CI
+        # nix-darwin-switch job's own step for this exact reason.
+        move_cmd = (
+            "if [ -f /etc/nix/nix.custom.conf ]; then "
+            "sudo mv /etc/nix/nix.custom.conf /etc/nix/nix.custom.conf.before-nix-darwin; "
+            "fi"
+        )
+        ok, _out, err = await nix_darwin_vm.exec_command(["bash", "-c", move_cmd])
+        if not ok:
+            raise VMError(f"Failed to move aside /etc/nix/nix.custom.conf: {err.strip()}")
+
         # nix-darwin's system activation now always runs as root (per
         # system.primaryUser's own purpose) — plain `nix run` fails with
         # "system activation must now be run as root". `sudo -n` fails fast
