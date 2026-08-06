@@ -277,6 +277,9 @@ class Validator:
 
         # scp -r <local> user@ip:<remote>  — uses sshpass -e for password auth.
         # Password passed via SSHPASS env var to avoid exposure in ps aux.
+        # PreferredAuthentications/PubkeyAuthentication: see async_ssh_exec()'s
+        # own comment in _utils.py — same "Too many authentication failures"
+        # footgun applies here since scp shares ssh's auth negotiation.
         scp_cmd = [
             "sshpass",
             "-e",
@@ -287,6 +290,10 @@ class Validator:
             "UserKnownHostsFile=/dev/null",
             "-o",
             "LogLevel=ERROR",
+            "-o",
+            "PreferredAuthentications=password",
+            "-o",
+            "PubkeyAuthentication=no",
             "-r",
             *sources,
             f"{self._vm.vm_user}@{ip}:{remote_dir}",
@@ -416,6 +423,8 @@ class Validator:
             local_path = Path(tmp.name)
 
         try:
+            # PreferredAuthentications/PubkeyAuthentication: see
+            # async_ssh_exec()'s comment in _utils.py.
             scp_cmd = [
                 "sshpass",
                 "-e",
@@ -426,6 +435,10 @@ class Validator:
                 "UserKnownHostsFile=/dev/null",
                 "-o",
                 "LogLevel=ERROR",
+                "-o",
+                "PreferredAuthentications=password",
+                "-o",
+                "PubkeyAuthentication=no",
                 f"{self._vm.vm_user}@{ip}:{self._REMOTE_SCAN_PATH}",
                 str(local_path),
             ]

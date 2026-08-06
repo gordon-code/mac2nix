@@ -146,6 +146,16 @@ async def async_ssh_exec(
     # StrictHostKeyChecking=no and UserKnownHostsFile=/dev/null: safe because
     # target VMs are ephemeral Tart clones on localhost — no persistent host
     # identity to verify, and the IP/key changes on every clone.
+    #
+    # PreferredAuthentications=password + PubkeyAuthentication=no: without
+    # these, ssh tries every other auth method first — including whatever
+    # default identity files happen to exist in the calling machine's
+    # ~/.ssh/ — before ever offering the password sshpass supplies. Each
+    # failed attempt counts against the *server's* MaxAuthTries, so on a
+    # machine with enough default keys present, ssh can exhaust that limit
+    # ("Too many authentication failures") before password auth is ever
+    # tried — reproduced empirically. Forcing password-only makes this
+    # deterministic regardless of what any given contributor's machine has.
     ssh_cmd = [
         "sshpass",
         "-e",
@@ -156,6 +166,10 @@ async def async_ssh_exec(
         "UserKnownHostsFile=/dev/null",
         "-o",
         "LogLevel=ERROR",
+        "-o",
+        "PreferredAuthentications=password",
+        "-o",
+        "PubkeyAuthentication=no",
         "-o",
         f"ConnectTimeout={max(timeout // 2, 5)}",
         f"{user}@{ip}",
