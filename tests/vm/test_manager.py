@@ -447,8 +447,8 @@ class TestWaitReady:
             ):
                 await mgr.wait_ready(max_attempts=5)
 
-        asyncio.run(_run())  # Should not raise; succeeds on attempt 3
-        assert call_count == 3
+        asyncio.run(_run())  # Should not raise; succeeds on attempt 3, then confirmed on a 4th call
+        assert call_count == 4
 
     def test_sleeps_between_attempts(self) -> None:
         sleep_calls: list[float] = []
@@ -468,6 +468,33 @@ class TestWaitReady:
         asyncio.run(_run())
         # 3 attempts → 2 sleeps (no sleep after last attempt)
         assert len(sleep_calls) == 2
+
+    def test_confirmation_failure_after_first_success_retries_not_returns(self) -> None:
+        """A spurious failure on the confirmation check must not be treated as ready."""
+        call_count = 0
+
+        async def flaky_confirmation(ip, user, pw, cmd, *, timeout):
+            nonlocal call_count
+            call_count += 1
+            # First check succeeds every attempt; only the *second* (confirmation)
+            # call in the whole test fails once, then everything succeeds.
+            if call_count == 2:
+                return (False, "", "Permission denied, please try again.")
+            return (True, user, "")
+
+        async def _run() -> None:
+            mgr = _cloned_manager("confirm-vm")
+            with (
+                patch.object(mgr, "get_ip", new=AsyncMock(return_value="10.0.0.1")),
+                patch("mac2nix.vm.manager.async_ssh_exec", side_effect=flaky_confirmation),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                await mgr.wait_ready(max_attempts=5)
+
+        asyncio.run(_run())  # Should not raise
+        # Attempt 1: first check succeeds (call 1), confirmation fails (call 2) → retry.
+        # Attempt 2: first check succeeds (call 3), confirmation succeeds (call 4) → ready.
+        assert call_count == 4
 
     def test_requires_clone(self) -> None:
         async def _run() -> None:

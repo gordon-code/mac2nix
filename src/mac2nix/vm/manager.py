@@ -228,10 +228,19 @@ class TartVMManager:
         raise VMError(f"Failed to configure guest DNS resolver: {err.strip()}")
 
     async def wait_ready(self, max_attempts: int = 10) -> None:
-        """Poll until the VM has an IP and accepts SSH connections.
+        """Poll until the VM has an IP and accepts two consecutive SSH connections.
 
-        Sleeps 5 seconds between attempts. Raises :exc:`VMTimeoutError` when
-        *max_attempts* is exhausted without a successful SSH handshake.
+        Sleeps 5 seconds between attempts. Requires the SSH check to succeed
+        twice in a row (2s apart) before declaring the VM ready — reproduced
+        empirically, a single successful `whoami` isn't a reliable enough
+        signal: a freshly-booted VM's account/SSH state can still be settling
+        at that exact moment, and the very next SSH-dependent call from a
+        caller (a second `exec_command`, an `scp`) can spuriously get
+        "Permission denied" moments later even though the credentials are
+        correct and a subsequent retry would succeed. One confirmation check
+        closes that window for every caller, rather than needing its own
+        retry logic at each call site. Raises :exc:`VMTimeoutError` when
+        *max_attempts* is exhausted without two consecutive successes.
         """
         clone = self._require_clone()
         logger.debug("Waiting for VM %r to be ready (%d attempts)", clone, max_attempts)
@@ -251,9 +260,16 @@ class TartVMManager:
                         ip, self._vm_user, self._vm_password, ["whoami"], timeout=10
                     )
                     if success and self._vm_user in out:
-                        logger.debug("VM %r is ready at %s", clone, ip)
-                        return
-                    logger.debug("SSH not yet ready for %r: %r", clone, _err.strip())
+                        await asyncio.sleep(2)
+                        confirm_success, confirm_out, confirm_err = await async_ssh_exec(
+                            ip, self._vm_user, self._vm_password, ["whoami"], timeout=10
+                        )
+                        if confirm_success and self._vm_user in confirm_out:
+                            logger.debug("VM %r is ready at %s", clone, ip)
+                            return
+                        logger.debug("SSH readiness confirmation failed for %r: %r", clone, confirm_err.strip())
+                    else:
+                        logger.debug("SSH not yet ready for %r: %r", clone, _err.strip())
                 except (VMConnectionError, VMError):
                     logger.debug("SSH attempt %d failed for %r", attempt + 1, clone)
             else:
