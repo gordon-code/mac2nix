@@ -184,6 +184,34 @@ class TartVMManager:
         )
         logger.debug("VM %r process started (pid=%d)", clone, self._vm_process.pid)
         await self.wait_ready()
+        await self._ensure_dns_resolves()
+
+    async def _ensure_dns_resolves(self) -> None:
+        """Point the guest's DNS at a public resolver, bypassing Tart's own gateway.
+
+        Verified empirically against a real VM: Tart's vmnet-provided gateway
+        (the DHCP-assigned nameserver, e.g. 192.168.64.1) can fail to answer
+        DNS queries from the guest at all — not slow, an outright connection
+        failure — while the exact same guest resolves instantly via a direct
+        public resolver. Every real network operation this project runs
+        inside a VM (downloading the Nix installer, fetching flake inputs)
+        needs public-hostname resolution, never anything the gateway's own
+        DHCP-provided resolver would uniquely know, so unconditionally
+        overriding it here is safe for this project's actual VM usage.
+
+        "Ethernet" is Tart's macOS base images' one consistent network
+        service name (a single virtio-net interface) — not dynamically
+        discovered, since every base image this project targets uses it.
+        Raises :exc:`VMError` if the override itself fails to apply, since a
+        broken guest resolver would otherwise surface later as a much more
+        confusing "could not resolve host" failure from whatever real
+        command runs next.
+        """
+        success, _out, err = await self.exec_command(
+            ["sudo", "networksetup", "-setdnsservers", "Ethernet", "1.1.1.1"], timeout=15
+        )
+        if not success:
+            raise VMError(f"Failed to configure guest DNS resolver: {err.strip()}")
 
     async def wait_ready(self, max_attempts: int = 10) -> None:
         """Poll until the VM has an IP and accepts SSH connections.

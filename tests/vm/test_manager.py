@@ -218,6 +218,7 @@ class TestStart:
                     new=AsyncMock(return_value=bg_proc),
                 ),
                 patch.object(mgr, "wait_ready", new=AsyncMock()),
+                patch.object(mgr, "_ensure_dns_resolves", new=AsyncMock()),
             ):
                 await mgr.start()
 
@@ -239,6 +240,7 @@ class TestStart:
                 patch("mac2nix.vm.manager.shutil.which", return_value="/usr/local/bin/tart"),
                 patch("mac2nix.vm.manager.asyncio.create_subprocess_exec", side_effect=recording_exec),
                 patch.object(mgr, "wait_ready", new=AsyncMock()),
+                patch.object(mgr, "_ensure_dns_resolves", new=AsyncMock()),
             ):
                 await mgr.start()
 
@@ -267,6 +269,7 @@ class TestStart:
                     new=AsyncMock(return_value=bg_proc),
                 ),
                 patch.object(mgr, "wait_ready", side_effect=mock_wait_ready),
+                patch.object(mgr, "_ensure_dns_resolves", new=AsyncMock()),
             ):
                 await mgr.start()
 
@@ -289,6 +292,64 @@ class TestStart:
                 await mgr.start()
 
         with pytest.raises(VMError, match="tart CLI is not available"):
+            asyncio.run(_run())
+
+    def test_calls_ensure_dns_resolves_after_wait_ready(self) -> None:
+        bg_proc = _make_bg_proc()
+        call_order: list[str] = []
+
+        async def _run() -> None:
+            mgr = _cloned_manager("test-vm")
+
+            async def mock_wait_ready(**_kw) -> None:
+                call_order.append("wait_ready")
+
+            async def mock_ensure_dns() -> None:
+                call_order.append("ensure_dns")
+
+            with (
+                patch("mac2nix.vm.manager.shutil.which", return_value="/usr/local/bin/tart"),
+                patch(
+                    "mac2nix.vm.manager.asyncio.create_subprocess_exec",
+                    new=AsyncMock(return_value=bg_proc),
+                ),
+                patch.object(mgr, "wait_ready", side_effect=mock_wait_ready),
+                patch.object(mgr, "_ensure_dns_resolves", side_effect=mock_ensure_dns),
+            ):
+                await mgr.start()
+
+        asyncio.run(_run())
+        assert call_order == ["wait_ready", "ensure_dns"]
+
+
+# ---------------------------------------------------------------------------
+# _ensure_dns_resolves()
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureDnsResolves:
+    def test_success_sets_guest_dns_via_networksetup(self) -> None:
+        captured_cmd: list[str] = []
+
+        async def fake_exec_command(cmd: list[str], **_kw: object) -> tuple[bool, str, str]:
+            captured_cmd.extend(cmd)
+            return True, "", ""
+
+        async def _run() -> None:
+            mgr = _cloned_manager("dns-vm")
+            with patch.object(mgr, "exec_command", side_effect=fake_exec_command):
+                await mgr._ensure_dns_resolves()
+
+        asyncio.run(_run())
+        assert captured_cmd == ["sudo", "networksetup", "-setdnsservers", "Ethernet", "1.1.1.1"]
+
+    def test_failure_raises_vm_error(self) -> None:
+        async def _run() -> None:
+            mgr = _cloned_manager("dns-vm")
+            with patch.object(mgr, "exec_command", new=AsyncMock(return_value=(False, "", "no such service"))):
+                await mgr._ensure_dns_resolves()
+
+        with pytest.raises(VMError, match="Failed to configure guest DNS resolver"):
             asyncio.run(_run())
 
 
