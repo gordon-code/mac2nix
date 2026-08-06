@@ -38,16 +38,23 @@ def store_age_key(key_path: Path, *, vault: str, title: str) -> str:
     """Upload *key_path* to 1Password as a Document item, then read it back to verify.
 
     Returns the created item's ID on success. Raises :exc:`OnePasswordError`
-    if `op` is missing, not signed in, the write fails, or the read-back
-    content doesn't match the on-disk key byte-for-byte — the last case is
-    the entire reason this function exists instead of a bare `op document
-    create` call: a write that "succeeds" but silently stores the wrong
-    (or no) content is worse than no backup, since it looks safe.
+    if `op` is missing, the write fails, or the read-back content doesn't
+    match the on-disk key byte-for-byte — the last case is the entire reason
+    this function exists instead of a bare `op document create` call: a
+    write that "succeeds" but silently stores the wrong (or no) content is
+    worse than no backup, since it looks safe.
+
+    Deliberately does not pre-check `is_signed_in()` before attempting the
+    write — `op whoami` has a known failure mode where it reports "not
+    signed in" while the local vault is still genuinely readable/writable
+    (session-state can desync from what `op` actually has access to).
+    Attempting the real operation and surfacing its own error message is a
+    more reliable signal than a separate pre-flight check that can itself
+    be wrong; `is_signed_in()` is still available as its own function for
+    callers that want a best-effort availability check.
     """
     if not is_available():
         raise OnePasswordError("`op` is not installed or not on PATH")
-    if not is_signed_in():
-        raise OnePasswordError("`op` is not signed in — run `op signin` first")
 
     create = subprocess.run(  # noqa: S603
         ["op", "document", "create", str(key_path), "--title", title, "--vault", vault, "--format", "json"],  # noqa: S607

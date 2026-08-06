@@ -42,24 +42,17 @@ class TestStoreAgeKey:
         ):
             onepassword.store_age_key(key_path, vault="Private", title="t")
 
-    def test_raises_when_not_signed_in(self, tmp_path: Path) -> None:
-        key_path = tmp_path / "keys.txt"
-        key_path.write_text("age-secret-key")
-
-        with (
-            patch("mac2nix.onepassword.is_available", return_value=True),
-            patch("mac2nix.onepassword.is_signed_in", return_value=False),
-            pytest.raises(onepassword.OnePasswordError, match="not signed in"),
-        ):
-            onepassword.store_age_key(key_path, vault="Private", title="t")
-
     def test_raises_when_create_fails(self, tmp_path: Path) -> None:
+        """Covers the not-signed-in case too, since store_age_key() no longer pre-checks
+        is_signed_in() — see its own docstring for why (op whoami can report "not signed
+        in" while the vault is still genuinely usable). The real `op document create`
+        call's own error message is the source of truth instead.
+        """
         key_path = tmp_path / "keys.txt"
         key_path.write_text("age-secret-key")
 
         with (
             patch("mac2nix.onepassword.is_available", return_value=True),
-            patch("mac2nix.onepassword.is_signed_in", return_value=True),
             patch("mac2nix.onepassword.subprocess.run") as mock_run,
         ):
             mock_run.return_value.returncode = 1
@@ -73,7 +66,6 @@ class TestStoreAgeKey:
 
         with (
             patch("mac2nix.onepassword.is_available", return_value=True),
-            patch("mac2nix.onepassword.is_signed_in", return_value=True),
             patch("mac2nix.onepassword.subprocess.run") as mock_run,
         ):
             mock_run.return_value.returncode = 0
@@ -90,7 +82,6 @@ class TestStoreAgeKey:
 
         with (
             patch("mac2nix.onepassword.is_available", return_value=True),
-            patch("mac2nix.onepassword.is_signed_in", return_value=True),
             patch("mac2nix.onepassword.subprocess.run", side_effect=[create_result, verify_result]),
             pytest.raises(onepassword.OnePasswordError, match="item not found"),
         ):
@@ -105,7 +96,6 @@ class TestStoreAgeKey:
 
         with (
             patch("mac2nix.onepassword.is_available", return_value=True),
-            patch("mac2nix.onepassword.is_signed_in", return_value=True),
             patch("mac2nix.onepassword.subprocess.run", side_effect=[create_result, verify_result]),
             pytest.raises(onepassword.OnePasswordError, match="did not match"),
         ):
@@ -120,7 +110,6 @@ class TestStoreAgeKey:
 
         with (
             patch("mac2nix.onepassword.is_available", return_value=True),
-            patch("mac2nix.onepassword.is_signed_in", return_value=True),
             patch("mac2nix.onepassword.subprocess.run", side_effect=[create_result, verify_result]) as mock_run,
         ):
             item_id = onepassword.store_age_key(key_path, vault="Private", title="my title")
