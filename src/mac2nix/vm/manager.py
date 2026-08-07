@@ -189,30 +189,21 @@ class TartVMManager:
     async def _ensure_dns_resolves(self, max_attempts: int = 3) -> None:
         """Point the guest's DNS at a public resolver, bypassing Tart's own gateway.
 
-        Verified empirically against a real VM: Tart's vmnet-provided gateway
-        (the DHCP-assigned nameserver, e.g. 192.168.64.1) can fail to answer
-        DNS queries from the guest at all — not slow, an outright connection
-        failure — while the exact same guest resolves instantly via a direct
-        public resolver. Every real network operation this project runs
-        inside a VM (downloading the Nix installer, fetching flake inputs)
-        needs public-hostname resolution, never anything the gateway's own
-        DHCP-provided resolver would uniquely know, so unconditionally
-        overriding it here is safe for this project's actual VM usage.
+        Verified against a real VM: Tart's vmnet gateway (e.g. 192.168.64.1)
+        can outright fail to answer guest DNS queries, while the same guest
+        resolves instantly via a direct public resolver. Every real network
+        op this project runs in a VM only needs public-hostname resolution,
+        so overriding unconditionally is safe here.
 
-        "Ethernet" is Tart's macOS base images' one consistent network
-        service name (a single virtio-net interface) — not dynamically
-        discovered, since every base image this project targets uses it.
+        "Ethernet" is Tart's one consistent network service name across the
+        base images this project targets — not dynamically discovered.
 
-        Retries on failure like :meth:`wait_ready` does for the same reason:
-        reproduced empirically, a VM can briefly reject the very same SSH
-        credentials moments after `wait_ready()`'s own check just succeeded
-        with them (macOS first-boot account/password setup finishing shortly
-        after sshd starts accepting connections) — a single-shot call here
-        would throw away `wait_ready()`'s own tolerance for that exact class
-        of boot-timing flakiness. Raises :exc:`VMError` if every attempt
-        fails, since a broken guest resolver would otherwise surface later as
-        a much more confusing "could not resolve host" failure from whatever
-        real command runs next.
+        Retries for the same reason as :meth:`wait_ready`: a VM can briefly
+        reject the same SSH credentials moments after `wait_ready()`'s own
+        check just succeeded (account/password setup still settling). Raises
+        :exc:`VMError` after exhausting attempts, so a broken resolver
+        surfaces clearly instead of as a confusing "could not resolve host"
+        from whatever real command runs next.
         """
         err = ""
         for attempt in range(max_attempts):
@@ -230,17 +221,14 @@ class TartVMManager:
     async def wait_ready(self, max_attempts: int = 10) -> None:
         """Poll until the VM has an IP and accepts two consecutive SSH connections.
 
-        Sleeps 5 seconds between attempts. Requires the SSH check to succeed
-        twice in a row (2s apart) before declaring the VM ready — reproduced
-        empirically, a single successful `whoami` isn't a reliable enough
-        signal: a freshly-booted VM's account/SSH state can still be settling
-        at that exact moment, and the very next SSH-dependent call from a
-        caller (a second `exec_command`, an `scp`) can spuriously get
-        "Permission denied" moments later even though the credentials are
-        correct and a subsequent retry would succeed. One confirmation check
-        closes that window for every caller, rather than needing its own
-        retry logic at each call site. Raises :exc:`VMTimeoutError` when
-        *max_attempts* is exhausted without two consecutive successes.
+        Sleeps 5 seconds between attempts. A single successful `whoami` isn't
+        reliable enough — a freshly-booted VM's account/SSH state can still be
+        settling, so the very next SSH-dependent call (another exec_command,
+        an scp) can spuriously get "Permission denied" moments later with
+        correct credentials. Two successes 2s apart closes that window for
+        every caller instead of needing retry logic at each call site. Raises
+        :exc:`VMTimeoutError` when *max_attempts* is exhausted without two
+        consecutive successes.
         """
         clone = self._require_clone()
         logger.debug("Waiting for VM %r to be ready (%d attempts)", clone, max_attempts)

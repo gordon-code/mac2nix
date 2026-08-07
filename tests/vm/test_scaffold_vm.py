@@ -110,12 +110,9 @@ def test_scaffold_switches_for_real(
         await _copy_age_key_to_vm(nix_darwin_vm, local_key_path, _VM_USERNAME)
         await validator._bootstrap_nix_darwin()
 
-        # nix-darwin refuses to overwrite any /etc file it doesn't already
-        # manage and finds with unrecognized content — the Determinate Nix
-        # installer run by _bootstrap_nix_darwin() above writes its own
-        # /etc/nix/nix.custom.conf, which nix-darwin's own Nix management
-        # then wants to own. Same conflict, same fix as the CI
-        # nix-darwin-switch job's own step for this exact reason.
+        # nix-darwin refuses to overwrite an unrecognized /etc/nix/nix.custom.conf
+        # (written by the Nix installer above) — same conflict/fix as the CI
+        # nix-darwin-switch job.
         move_cmd = (
             "if [ -f /etc/nix/nix.custom.conf ]; then "
             "sudo mv /etc/nix/nix.custom.conf /etc/nix/nix.custom.conf.before-nix-darwin; "
@@ -125,26 +122,16 @@ def test_scaffold_switches_for_real(
         if not ok:
             raise VMError(f"Failed to move aside /etc/nix/nix.custom.conf: {err.strip()}")
 
-        # macos-tahoe-base ships with a pre-existing Homebrew install.
-        # nix-homebrew's autoMigrate can't cleanly adopt one with real content
-        # across multiple taps — same cascading conflict already root-caused
-        # and fixed the same way in CI's nix-darwin-switch job (an existing
-        # Library/Taps directory, then a formula whose originating tap had
-        # just been removed). Wiping it first lets nix-homebrew do a normal
-        # fresh install instead. Nothing in this test needs Homebrew itself —
-        # Nix comes from _bootstrap_nix_darwin() above, independent of brew.
+        # macos-tahoe-base's pre-existing Homebrew can't be cleanly adopted by
+        # nix-homebrew's autoMigrate — same conflict/fix as CI's nix-darwin-switch
+        # job. Nothing here needs Homebrew itself; Nix comes from the bootstrap above.
         ok, _out, err = await nix_darwin_vm.exec_command(["sudo", "rm", "-rf", "/opt/homebrew"], timeout=60)
         if not ok:
             raise VMError(f"Failed to remove pre-existing Homebrew: {err.strip()}")
 
-        # nix-darwin's system activation now always runs as root (per
-        # system.primaryUser's own purpose) — plain `nix run` fails with
-        # "system activation must now be run as root". `sudo -n` fails fast
-        # rather than hanging on a password prompt if passwordless sudo isn't
-        # actually available. `$(command -v nix)` resolves nix's absolute
-        # path in the current (profile-sourced) shell *before* handing it to
-        # sudo, since sudo's own secure_path won't include wherever the
-        # nix-daemon profile put it on PATH.
+        # nix-darwin's activation runs as root; `sudo -n` fails fast instead of
+        # hanging if passwordless sudo isn't available. `$(command -v nix)`
+        # resolves nix's path before sudo, since sudo's secure_path won't include it.
         switch_cmd = (
             f"cd {validator._REMOTE_FLAKE_DIR}"
             " && . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
