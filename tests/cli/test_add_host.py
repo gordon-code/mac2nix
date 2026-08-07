@@ -170,7 +170,7 @@ class TestAddHostCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert "Backed up to 1Password vault 'Private' (item item123)" in result.output
+        assert "Backed up to 1Password vault 'Private' as 'mac2nix age key — myhost/alice'" in result.output
         assert "Have you backed up the private key" not in result.output
         mock_store.assert_called_once()
         kwargs = mock_store.call_args.kwargs

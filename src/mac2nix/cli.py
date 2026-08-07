@@ -320,11 +320,13 @@ def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op
         if op_vault:
             title = f"mac2nix age key — {current_hostname}/{current_username}"
             try:
-                item_id = onepassword.store_age_key(age_key_path(current_username), vault=op_vault, title=title)
+                onepassword.store_age_key(age_key_path(current_username), vault=op_vault, title=title)
             except onepassword.OnePasswordError as exc:
                 click.echo(f"1Password backup failed ({exc}) — falling back to manual confirmation.")
             else:
-                click.echo(f"Backed up to 1Password vault {op_vault!r} (item {item_id}), verified by read-back.")
+                # The item's title, not its raw uuid — a uuid isn't something
+                # you can search for in the 1Password app, the title is.
+                click.echo(f"Backed up to 1Password vault {op_vault!r} as {title!r}, verified by read-back.")
                 return True
         while not click.confirm("Have you backed up the private key?", default=False):
             click.echo("This key cannot be recovered if lost — please back it up before continuing.")
