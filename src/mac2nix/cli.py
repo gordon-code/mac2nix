@@ -316,8 +316,7 @@ def _run_nix_flake_lock(output_dir: Path) -> None:
 def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op_vault: str | None) -> None:
     """Register a host with an existing mac2nix-scaffolded framework."""
 
-    def _confirm_backup(fingerprint: str, current_username: str, current_hostname: str) -> bool:
-        click.echo(f"Public key fingerprint: {fingerprint}")
+    def _confirm_backup(_fingerprint: str, current_username: str, current_hostname: str) -> bool:
         if op_vault:
             title = f"mac2nix age key — {current_hostname}/{current_username}"
             try:
@@ -327,7 +326,7 @@ def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op
             else:
                 click.echo(f"Backed up to 1Password vault {op_vault!r} (item {item_id}), verified by read-back.")
                 return True
-        while not click.confirm("Have you backed up the private key to a password manager?", default=False):
+        while not click.confirm("Have you backed up the private key?", default=False):
             click.echo("This key cannot be recovered if lost — please back it up before continuing.")
         return True
 
@@ -358,7 +357,7 @@ def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op
         next_system = click.prompt("System", default=system, type=click.Choice(_SYSTEM_CHOICES), show_default=True)
         _register_one(next_hostname, next_username, next_system)
 
-    if _confirm_or_default("Run `nix flake lock` now?", default=False):
+    if _confirm_or_default("Run `nix flake lock` now?", default=True):
         _run_nix_flake_lock(output_dir)
     else:
         click.echo(f"Next: run `nix flake lock` inside {output_dir} before the first build for this host.")

@@ -44,6 +44,7 @@ class TestAddHostCommand:
         assert (output_dir / "hosts" / "darwin" / "myhost" / ".mac2nix-meta.json").is_file()
         assert (output_dir / "users" / "alice.nix").is_file()
         assert (output_dir / "secrets" / "myhost.yaml").is_file()
+        assert result.output.count("age key fingerprint:") == 1
         assert "myhost" in (output_dir / "flake.nix").read_text()
         assert "myhost" in (output_dir / ".sops.yaml").read_text()
 
@@ -217,6 +218,26 @@ class TestAddHostCommand:
             )
 
         assert result.exit_code == 0, result.output
+        mock_lock.assert_called_once_with(output_dir)
+
+    def test_flake_lock_prompt_defaults_to_yes_on_bare_enter(self, tmp_path: Path) -> None:
+        """Pressing Enter (no explicit y/n) at the flake-lock prompt must run it, not skip it."""
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+
+        runner = CliRunner()
+        with (
+            _redirect_age_keys(tmp_path / "age-keys"),
+            patch("mac2nix.cli._run_nix_flake_lock") as mock_lock,
+        ):
+            result = runner.invoke(
+                main,
+                ["add-host", str(output_dir), "--hostname", "myhost", "--username", "alice"],
+                input="y\nn\n\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Run `nix flake lock` now? [Y/n]" in result.output
         mock_lock.assert_called_once_with(output_dir)
 
     def test_flake_lock_prompt_reports_failure(self, tmp_path: Path) -> None:
