@@ -1,10 +1,9 @@
 { inputs }:
 
-{ hostname, system, users }:
+{ hostname, system, users, primaryUser }:
 
 let
   inherit (inputs) darwin home-manager nix-homebrew mac-app-util determinate sops-nix homebrew-core homebrew-cask;
-  primaryUser = builtins.elemAt users 0;
 in
 darwin.lib.darwinSystem {
   specialArgs = { inherit inputs hostname; };
@@ -19,7 +18,9 @@ darwin.lib.darwinSystem {
       nixpkgs.hostPlatform = system;
       # Required by nix-darwin whenever an option that used to apply to the
       # invoking user (e.g. homebrew.enable) is set, now that system
-      # activation always runs as root — per host, from its own user list.
+      # activation always runs as root. Passed explicitly per host rather
+      # than inferred from `users` — that list also feeds home-manager and
+      # may grow past one entry without changing who owns Homebrew/sops.
       system.primaryUser = primaryUser;
 
       sops.defaultSopsFile = ../secrets + "/${hostname}.yaml";

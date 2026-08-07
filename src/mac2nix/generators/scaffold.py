@@ -216,7 +216,8 @@ def _regenerate_flake_hosts_block(output_dir: Path, metas: list[dict[str, Any]])
 
     host_lines = [
         f"    {nix_string(m['hostname'])} = mkDarwinSystem {{ hostname = {nix_string(m['hostname'])}; "
-        f"system = {nix_string(m['system'])}; users = [ {nix_string(m['username'])} ]; }};"
+        f"system = {nix_string(m['system'])}; users = [ {nix_string(m['username'])} ]; "
+        f"primaryUser = {nix_string(m['username'])}; }};"
         for m in metas
     ]
     new_inner = "".join(f"{line}\n" for line in host_lines) + "        "
