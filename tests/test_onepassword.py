@@ -73,11 +73,28 @@ class TestStoreAgeKey:
             with pytest.raises(onepassword.OnePasswordError, match="unexpected output"):
                 onepassword.store_age_key(key_path, vault="Private", title="t")
 
+    def test_raises_when_create_output_is_missing_uuid_field(self, tmp_path: Path) -> None:
+        """A real `op document create --format json` response uses "uuid", not "id" —
+        regression guard for that exact field-name mismatch (caught via a real op
+        invocation, since a mock can only ever assert its own guess at the schema).
+        """
+        key_path = tmp_path / "keys.txt"
+        key_path.write_text("age-secret-key")
+
+        with (
+            patch("mac2nix.onepassword.is_available", return_value=True),
+            patch("mac2nix.onepassword.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = json.dumps({"id": "item123"})
+            with pytest.raises(onepassword.OnePasswordError, match="unexpected output"):
+                onepassword.store_age_key(key_path, vault="Private", title="t")
+
     def test_raises_when_verify_read_fails(self, tmp_path: Path) -> None:
         key_path = tmp_path / "keys.txt"
         key_path.write_text("age-secret-key")
 
-        create_result = type("R", (), {"returncode": 0, "stdout": json.dumps({"id": "item123"})})()
+        create_result = type("R", (), {"returncode": 0, "stdout": json.dumps({"uuid": "item123"})})()
         verify_result = type("R", (), {"returncode": 1, "stderr": b"item not found"})()
 
         with (
@@ -91,7 +108,7 @@ class TestStoreAgeKey:
         key_path = tmp_path / "keys.txt"
         key_path.write_text("age-secret-key")
 
-        create_result = type("R", (), {"returncode": 0, "stdout": json.dumps({"id": "item123"})})()
+        create_result = type("R", (), {"returncode": 0, "stdout": json.dumps({"uuid": "item123"})})()
         verify_result = type("R", (), {"returncode": 0, "stdout": b"wrong-content"})()
 
         with (
@@ -105,7 +122,7 @@ class TestStoreAgeKey:
         key_path = tmp_path / "keys.txt"
         key_path.write_text("age-secret-key")
 
-        create_result = type("R", (), {"returncode": 0, "stdout": json.dumps({"id": "item123"})})()
+        create_result = type("R", (), {"returncode": 0, "stdout": json.dumps({"uuid": "item123"})})()
         verify_result = type("R", (), {"returncode": 0, "stdout": key_path.read_bytes()})()
 
         with (

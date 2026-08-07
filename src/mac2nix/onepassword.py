@@ -65,8 +65,13 @@ def store_age_key(key_path: Path, *, vault: str, title: str) -> str:
     if create.returncode != 0:
         raise OnePasswordError(f"op document create failed: {create.stderr.strip()}")
 
+    # Verified against a real `op document create --format json` response:
+    # the created item's identifier comes back as "uuid", not "id" — despite
+    # "id" being the field name `op item ...` commands use elsewhere. Caught
+    # by an actual op invocation; a schema this function's own tests can't
+    # verify by construction, since a mock only ever asserts its own guess.
     try:
-        item_id = json.loads(create.stdout)["id"]
+        item_id = json.loads(create.stdout)["uuid"]
     except (json.JSONDecodeError, KeyError) as exc:
         raise OnePasswordError(f"op document create returned unexpected output: {create.stdout.strip()}") from exc
 
