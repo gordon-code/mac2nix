@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: install lint format typecheck test test-integration test-quick clean all prek-install prek
+.PHONY: install lint format typecheck test test-integration test-vm test-nix test-nix-darwin-switch test-op-cli prewarm-vm pull-base-vm test-quick clean all prek-install prek
 
 install:
 	uv sync
@@ -18,9 +18,42 @@ typecheck:
 test:
 	uv run pytest
 
-test-integration:
-	tart list | grep -q "$${MAC2NIX_BASE_VM:-macos-tahoe-base}" || tart pull ghcr.io/cirruslabs/macos-tahoe-base@sha256:a8e1c8305758643f513fdccdd829c2243687c60791083dea42f73f0b7aeb435c # latest
+# Pull-if-missing, shared by test-integration/test-vm rather than each duplicating
+# the pinned digest. Uses mac2nix.vm.manager.pull_base_image_if_missing() (exact-name
+# match + `tart clone <ref> <name>`) rather than a plain-text `tart list | grep`, which
+# false-positives: an OCI pull caches under its full registry/repo@digest string, which
+# contains "macos-tahoe-base" as a substring without actually being named that.
+# Always operates on the one canonical pinned name/digest pair (its own defaults) —
+# deliberately ignores MAC2NIX_BASE_VM, since passing only `name=` without a matching
+# `image_ref=` would silently clone the unrelated pinned macos-tahoe-base image and
+# tag it under whatever name MAC2NIX_BASE_VM names (e.g. mac2nix-nix-base), producing
+# a VM that looks prewarmed by name but has no Nix installed. A prewarmed image is
+# only ever created for real by `make prewarm-vm`; this target's only job is to
+# guarantee the fallback pinned image exists.
+pull-base-vm:
+	uv run python -c "import asyncio; from mac2nix.vm.manager import pull_base_image_if_missing; asyncio.run(pull_base_image_if_missing())"
+
+test-integration: pull-base-vm
 	uv run pytest -m integration --tb=long
+
+test-vm: pull-base-vm
+	uv run pytest -m nix_vm --tb=long
+
+test-nix:
+	uv run pytest -m nix_build --tb=long
+
+# CI-only — skips unless GITHUB_ACTIONS=true (see the test module's own docstring).
+# Never invoke this on a real machine; it applies a genuine nix-darwin switch.
+test-nix-darwin-switch:
+	uv run pytest -m nix_darwin_switch --tb=long
+
+# Requires a real, signed-in `op` CLI and MAC2NIX_TEST_OP_VAULT set to a disposable
+# test vault — skips otherwise (see tests/test_onepassword.py's op_test_vault fixture).
+test-op-cli:
+	uv run pytest -m op_cli --tb=long
+
+prewarm-vm:
+	uv run python scripts/prewarm_vm.py
 
 test-quick:
 	uv run pytest -x --no-header -q

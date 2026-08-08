@@ -343,6 +343,10 @@ class TestAsyncSshExec:
             "-o",
             "LogLevel=ERROR",
             "-o",
+            "PreferredAuthentications=password",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
             "ConnectTimeout=15",  # max(30 // 2, 5) — SSH timeout is half the process timeout
             "admin@192.168.64.10",
             "--",

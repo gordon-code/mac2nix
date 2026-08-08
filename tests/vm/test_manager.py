@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from mac2nix.vm._utils import VMConnectionError, VMError, VMTimeoutError
-from mac2nix.vm.manager import TartVMManager
+from mac2nix.vm.manager import BASE_IMAGE_NAME, BASE_IMAGE_REF, TartVMManager, pull_base_image_if_missing
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -217,6 +218,7 @@ class TestStart:
                     new=AsyncMock(return_value=bg_proc),
                 ),
                 patch.object(mgr, "wait_ready", new=AsyncMock()),
+                patch.object(mgr, "_ensure_dns_resolves", new=AsyncMock()),
             ):
                 await mgr.start()
 
@@ -238,6 +240,7 @@ class TestStart:
                 patch("mac2nix.vm.manager.shutil.which", return_value="/usr/local/bin/tart"),
                 patch("mac2nix.vm.manager.asyncio.create_subprocess_exec", side_effect=recording_exec),
                 patch.object(mgr, "wait_ready", new=AsyncMock()),
+                patch.object(mgr, "_ensure_dns_resolves", new=AsyncMock()),
             ):
                 await mgr.start()
 
@@ -266,6 +269,7 @@ class TestStart:
                     new=AsyncMock(return_value=bg_proc),
                 ),
                 patch.object(mgr, "wait_ready", side_effect=mock_wait_ready),
+                patch.object(mgr, "_ensure_dns_resolves", new=AsyncMock()),
             ):
                 await mgr.start()
 
@@ -289,6 +293,87 @@ class TestStart:
 
         with pytest.raises(VMError, match="tart CLI is not available"):
             asyncio.run(_run())
+
+    def test_calls_ensure_dns_resolves_after_wait_ready(self) -> None:
+        bg_proc = _make_bg_proc()
+        call_order: list[str] = []
+
+        async def _run() -> None:
+            mgr = _cloned_manager("test-vm")
+
+            async def mock_wait_ready(**_kw) -> None:
+                call_order.append("wait_ready")
+
+            async def mock_ensure_dns() -> None:
+                call_order.append("ensure_dns")
+
+            with (
+                patch("mac2nix.vm.manager.shutil.which", return_value="/usr/local/bin/tart"),
+                patch(
+                    "mac2nix.vm.manager.asyncio.create_subprocess_exec",
+                    new=AsyncMock(return_value=bg_proc),
+                ),
+                patch.object(mgr, "wait_ready", side_effect=mock_wait_ready),
+                patch.object(mgr, "_ensure_dns_resolves", side_effect=mock_ensure_dns),
+            ):
+                await mgr.start()
+
+        asyncio.run(_run())
+        assert call_order == ["wait_ready", "ensure_dns"]
+
+
+# ---------------------------------------------------------------------------
+# _ensure_dns_resolves()
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureDnsResolves:
+    def test_success_sets_guest_dns_via_networksetup(self) -> None:
+        captured_cmd: list[str] = []
+
+        async def fake_exec_command(cmd: list[str], **_kw: object) -> tuple[bool, str, str]:
+            captured_cmd.extend(cmd)
+            return True, "", ""
+
+        async def _run() -> None:
+            mgr = _cloned_manager("dns-vm")
+            with patch.object(mgr, "exec_command", side_effect=fake_exec_command):
+                await mgr._ensure_dns_resolves()
+
+        asyncio.run(_run())
+        assert captured_cmd == ["sudo", "networksetup", "-setdnsservers", "Ethernet", "1.1.1.1"]
+
+    def test_failure_raises_vm_error_after_exhausting_retries(self) -> None:
+        async def _run() -> None:
+            mgr = _cloned_manager("dns-vm")
+            with (
+                patch.object(mgr, "exec_command", new=AsyncMock(return_value=(False, "", "no such service"))),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                await mgr._ensure_dns_resolves()
+
+        with pytest.raises(VMError, match="Failed to configure guest DNS resolver"):
+            asyncio.run(_run())
+
+    def test_retries_and_succeeds_after_transient_failure(self) -> None:
+        attempts: list[int] = []
+
+        async def flaky_exec_command(cmd: list[str], **_kw: object) -> tuple[bool, str, str]:
+            attempts.append(1)
+            if len(attempts) < 2:
+                return False, "", "Permission denied, please try again."
+            return True, "", ""
+
+        async def _run() -> None:
+            mgr = _cloned_manager("dns-vm")
+            with (
+                patch.object(mgr, "exec_command", side_effect=flaky_exec_command),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                await mgr._ensure_dns_resolves()
+
+        asyncio.run(_run())
+        assert len(attempts) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +447,8 @@ class TestWaitReady:
             ):
                 await mgr.wait_ready(max_attempts=5)
 
-        asyncio.run(_run())  # Should not raise; succeeds on attempt 3
-        assert call_count == 3
+        asyncio.run(_run())  # Should not raise; succeeds on attempt 3, then confirmed on a 4th call
+        assert call_count == 4
 
     def test_sleeps_between_attempts(self) -> None:
         sleep_calls: list[float] = []
@@ -383,6 +468,33 @@ class TestWaitReady:
         asyncio.run(_run())
         # 3 attempts → 2 sleeps (no sleep after last attempt)
         assert len(sleep_calls) == 2
+
+    def test_confirmation_failure_after_first_success_retries_not_returns(self) -> None:
+        """A spurious failure on the confirmation check must not be treated as ready."""
+        call_count = 0
+
+        async def flaky_confirmation(ip, user, pw, cmd, *, timeout):
+            nonlocal call_count
+            call_count += 1
+            # First check succeeds every attempt; only the *second* (confirmation)
+            # call in the whole test fails once, then everything succeeds.
+            if call_count == 2:
+                return (False, "", "Permission denied, please try again.")
+            return (True, user, "")
+
+        async def _run() -> None:
+            mgr = _cloned_manager("confirm-vm")
+            with (
+                patch.object(mgr, "get_ip", new=AsyncMock(return_value="10.0.0.1")),
+                patch("mac2nix.vm.manager.async_ssh_exec", side_effect=flaky_confirmation),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                await mgr.wait_ready(max_attempts=5)
+
+        asyncio.run(_run())  # Should not raise
+        # Attempt 1: first check succeeds (call 1), confirmation fails (call 2) → retry.
+        # Attempt 2: first check succeeds (call 3), confirmation succeeds (call 4) → ready.
+        assert call_count == 4
 
     def test_requires_clone(self) -> None:
         async def _run() -> None:
@@ -1010,3 +1122,77 @@ class TestContextManager:
                 # After exit, cleanup was called (stop + delete ran)
 
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# pull_base_image_if_missing()
+# ---------------------------------------------------------------------------
+
+
+class TestPullBaseImageIfMissing:
+    def test_skips_pull_when_name_present(self) -> None:
+        list_output = json.dumps([{"Name": BASE_IMAGE_NAME}, {"Name": "other-vm"}])
+        captured: list[list[str]] = []
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            captured.append(cmd)
+            return (0, list_output, "")
+
+        async def _run() -> None:
+            with patch("mac2nix.vm.manager.async_run_command", side_effect=recording_run):
+                await pull_base_image_if_missing(name=BASE_IMAGE_NAME, image_ref=BASE_IMAGE_REF)
+
+        asyncio.run(_run())
+        assert captured == [["tart", "list", "--format", "json"]]  # no clone call made
+
+    def test_pulls_when_name_absent(self) -> None:
+        list_output = json.dumps([{"Name": "other-vm"}])
+        captured: list[list[str]] = []
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            captured.append(cmd)
+            if cmd[:2] == ["tart", "list"]:
+                return (0, list_output, "")
+            return (0, "", "")
+
+        async def _run() -> None:
+            with patch("mac2nix.vm.manager.async_run_command", side_effect=recording_run):
+                await pull_base_image_if_missing(name=BASE_IMAGE_NAME, image_ref=BASE_IMAGE_REF)
+
+        asyncio.run(_run())
+        assert captured[-1] == ["tart", "clone", BASE_IMAGE_REF, BASE_IMAGE_NAME]
+
+    def test_pulls_when_only_full_digest_variant_present(self) -> None:
+        """A locally-cached OCI pull is named by its full `registry/repo@digest`
+        string, which contains BASE_IMAGE_NAME as a substring without actually
+        being it — matching must be exact-name, not substring."""
+        list_output = json.dumps([{"Name": f"ghcr.io/cirruslabs/{BASE_IMAGE_NAME}@sha256:deadbeef"}])
+        captured: list[list[str]] = []
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            captured.append(cmd)
+            if cmd[:2] == ["tart", "list"]:
+                return (0, list_output, "")
+            return (0, "", "")
+
+        async def _run() -> None:
+            with patch("mac2nix.vm.manager.async_run_command", side_effect=recording_run):
+                await pull_base_image_if_missing(name=BASE_IMAGE_NAME, image_ref=BASE_IMAGE_REF)
+
+        asyncio.run(_run())
+        assert captured[-1] == ["tart", "clone", BASE_IMAGE_REF, BASE_IMAGE_NAME]
+
+    def test_raises_vm_error_on_clone_failure(self) -> None:
+        list_output = json.dumps([])
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            if cmd[:2] == ["tart", "list"]:
+                return (0, list_output, "")
+            return (1, "", "no space left on device")
+
+        async def _run() -> None:
+            with patch("mac2nix.vm.manager.async_run_command", side_effect=recording_run):
+                await pull_base_image_if_missing(name=BASE_IMAGE_NAME, image_ref=BASE_IMAGE_REF)
+
+        with pytest.raises(VMError, match="tart clone"):
+            asyncio.run(_run())

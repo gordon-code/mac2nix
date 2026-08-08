@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import shutil
 
@@ -26,6 +27,54 @@ _SSH_DISCONNECT_PATTERNS = (
     "connection refused",
     "no route to host",
 )
+
+# Pinned Tart base image used by this project's real VM integration tests.
+# Kept here, alongside TartVMManager, so scripts/prewarm_vm.py and
+# tests/vm_fixtures.py share one source of truth instead of re-deriving the
+# digest (mirrors the Makefile's own test-integration target).
+BASE_IMAGE_NAME = "macos-tahoe-base"
+BASE_IMAGE_REF = (
+    "ghcr.io/cirruslabs/macos-tahoe-base@sha256:a8e1c8305758643f513fdccdd829c2243687c60791083dea42f73f0b7aeb435c"
+)
+
+
+async def _local_vm_names() -> set[str]:
+    """Return the exact set of locally-known Tart VM/image names.
+
+    Uses ``tart list --format json`` rather than the plain-text table —
+    verified empirically that a plain substring check against the table
+    (mirroring the Makefile's own ``grep -q``) false-positives on
+    ``BASE_IMAGE_NAME`` ("macos-tahoe-base"), since that string is itself a
+    substring of the full ``registry/repo@digest`` name an OCI pull is
+    actually cached under.
+    """
+    returncode, stdout, _stderr = await async_run_command(["tart", "list", "--format", "json"])
+    if returncode != 0:
+        return set()
+    entries = json.loads(stdout)
+    return {entry["Name"] for entry in entries}
+
+
+async def pull_base_image_if_missing(name: str = BASE_IMAGE_NAME, image_ref: str = BASE_IMAGE_REF) -> None:
+    """Ensure a locally-named *name* VM exists, pulling *image_ref* under that name if missing.
+
+    Uses ``tart clone <image_ref> <name>`` rather than ``tart pull
+    <image_ref>`` — verified empirically that ``tart pull`` caches the OCI
+    blob under its own full ``registry/repo@digest`` string, not a short
+    alias, so a bare ``tart clone <name> ...`` against that short name fails
+    with "the specified VM does not exist" even right after a successful
+    pull. ``tart clone`` accepts a remote reference as its source and pulls
+    it on a cache miss, so this both fetches and aliases it in one step.
+
+    Raises :exc:`VMError` if the clone/pull fails.
+    """
+    if name in await _local_vm_names():
+        return
+
+    logger.debug("Pulling base image %r as %r", image_ref, name)
+    returncode, _stdout, stderr = await async_run_command(["tart", "clone", image_ref, name], timeout=600)
+    if returncode != 0:
+        raise VMError(f"tart clone {image_ref!r} -> {name!r} failed (exit {returncode}): {stderr.strip()}")
 
 
 class TartVMManager:
@@ -135,12 +184,51 @@ class TartVMManager:
         )
         logger.debug("VM %r process started (pid=%d)", clone, self._vm_process.pid)
         await self.wait_ready()
+        await self._ensure_dns_resolves()
+
+    async def _ensure_dns_resolves(self, max_attempts: int = 3) -> None:
+        """Point the guest's DNS at a public resolver, bypassing Tart's own gateway.
+
+        Verified against a real VM: Tart's vmnet gateway (e.g. 192.168.64.1)
+        can outright fail to answer guest DNS queries, while the same guest
+        resolves instantly via a direct public resolver. Every real network
+        op this project runs in a VM only needs public-hostname resolution,
+        so overriding unconditionally is safe here.
+
+        "Ethernet" is Tart's one consistent network service name across the
+        base images this project targets — not dynamically discovered.
+
+        Retries for the same reason as :meth:`wait_ready`: a VM can briefly
+        reject the same SSH credentials moments after `wait_ready()`'s own
+        check just succeeded (account/password setup still settling). Raises
+        :exc:`VMError` after exhausting attempts, so a broken resolver
+        surfaces clearly instead of as a confusing "could not resolve host"
+        from whatever real command runs next.
+        """
+        err = ""
+        for attempt in range(max_attempts):
+            success, _out, err = await self.exec_command(
+                ["sudo", "networksetup", "-setdnsservers", "Ethernet", "1.1.1.1"], timeout=15
+            )
+            if success:
+                return
+            logger.debug("DNS configuration attempt %d/%d failed: %s", attempt + 1, max_attempts, err.strip())
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(5)
+
+        raise VMError(f"Failed to configure guest DNS resolver: {err.strip()}")
 
     async def wait_ready(self, max_attempts: int = 10) -> None:
-        """Poll until the VM has an IP and accepts SSH connections.
+        """Poll until the VM has an IP and accepts two consecutive SSH connections.
 
-        Sleeps 5 seconds between attempts. Raises :exc:`VMTimeoutError` when
-        *max_attempts* is exhausted without a successful SSH handshake.
+        Sleeps 5 seconds between attempts. A single successful `whoami` isn't
+        reliable enough — a freshly-booted VM's account/SSH state can still be
+        settling, so the very next SSH-dependent call (another exec_command,
+        an scp) can spuriously get "Permission denied" moments later with
+        correct credentials. Two successes 2s apart closes that window for
+        every caller instead of needing retry logic at each call site. Raises
+        :exc:`VMTimeoutError` when *max_attempts* is exhausted without two
+        consecutive successes.
         """
         clone = self._require_clone()
         logger.debug("Waiting for VM %r to be ready (%d attempts)", clone, max_attempts)
@@ -160,9 +248,16 @@ class TartVMManager:
                         ip, self._vm_user, self._vm_password, ["whoami"], timeout=10
                     )
                     if success and self._vm_user in out:
-                        logger.debug("VM %r is ready at %s", clone, ip)
-                        return
-                    logger.debug("SSH not yet ready for %r: %r", clone, _err.strip())
+                        await asyncio.sleep(2)
+                        confirm_success, confirm_out, confirm_err = await async_ssh_exec(
+                            ip, self._vm_user, self._vm_password, ["whoami"], timeout=10
+                        )
+                        if confirm_success and self._vm_user in confirm_out:
+                            logger.debug("VM %r is ready at %s", clone, ip)
+                            return
+                        logger.debug("SSH readiness confirmation failed for %r: %r", clone, confirm_err.strip())
+                    else:
+                        logger.debug("SSH not yet ready for %r: %r", clone, _err.strip())
                 except (VMConnectionError, VMError):
                     logger.debug("SSH attempt %d failed for %r", attempt + 1, clone)
             else:

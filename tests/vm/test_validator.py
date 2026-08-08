@@ -15,6 +15,8 @@ from mac2nix.models.system import NetworkConfig, SecurityState
 from mac2nix.models.system_state import SystemState
 from mac2nix.vm._utils import VMError
 from mac2nix.vm.validator import (
+    _NIX_PROFILE_SOURCE,
+    NIX_INSTALLER_URL,
     DomainScore,
     FidelityReport,
     Mismatch,
@@ -466,6 +468,137 @@ class TestValidatorCopyFlake:
         assert "admin" not in cmd  # password must not appear in argv
         assert captured_env[0] == {"SSHPASS": "admin"}
 
+    def test_exclude_omits_dev_only_directories(self, tmp_path: Path) -> None:
+        """When exclude is non-empty, only top-level entries not in exclude are copied."""
+        for name in (".git", ".env", "data", "hack"):
+            (tmp_path / name).mkdir()
+        (tmp_path / "flake.nix").touch()
+
+        vm = _make_vm(exec_result=(True, "", ""))
+        captured: list[list[str]] = []
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            captured.append(cmd)
+            return (0, "", "")
+
+        async def _run() -> None:
+            v = Validator(vm)
+            with patch("mac2nix.vm.validator.async_run_command", side_effect=recording_run):
+                await v._copy_flake_to_vm(tmp_path, exclude=Validator._LOCAL_SOURCE_EXCLUDE)
+
+        asyncio.run(_run())
+        cmd = captured[0]
+        sources = cmd[14:-1]  # scp_cmd layout: 14 fixed args, *sources, dest
+        source_names = {Path(src).name for src in sources}
+        assert source_names == {"flake.nix"}
+
+
+# ---------------------------------------------------------------------------
+# Validator._scan_vm() — mac2nix_source selection
+# ---------------------------------------------------------------------------
+
+
+class TestScanVMSourceSelection:
+    def test_default_source_runs_published_flake_without_extra_copy(self) -> None:
+        """Default mac2nix_source runs the GitHub flake directly — regression check
+        that today's `mac2nix validate` behavior (no local-source SCP) is unchanged."""
+        vm = _make_vm(exec_result=(True, "", ""))
+        vm_state = _base_state(shell=ShellConfig(shell_type="fish"))
+        exec_calls: list[list[str]] = []
+
+        async def exec_side_effect(cmd, **_kw):
+            exec_calls.append(cmd)
+            return (True, "", "")
+
+        vm.exec_command = AsyncMock(side_effect=exec_side_effect)
+
+        async def _run() -> SystemState:
+            v = Validator(vm)  # default mac2nix_source
+            with (
+                patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))),
+                patch.object(SystemState, "from_json", return_value=vm_state),
+            ):
+                return await v._scan_vm()
+
+        result = asyncio.run(_run())
+        assert result is vm_state
+        # Only the `nix run` scan invocation — no mkdir/scp for a source copy.
+        assert len(exec_calls) == 1
+        nix_run_cmd = exec_calls[0]
+        joined = nix_run_cmd[2]
+        assert f"nix run {Validator._DEFAULT_MAC2NIX_SOURCE} --" in joined
+        assert Validator._REMOTE_SOURCE_DIR not in joined
+
+    def test_local_source_triggers_scp_and_runs_from_remote_source_dir(self, tmp_path: Path) -> None:
+        """A non-default mac2nix_source is SCPed into the VM (excluding dev-only
+        dirs) and `nix run` targets the remote source dir, not a github: URL."""
+        (tmp_path / "flake.nix").touch()
+        (tmp_path / ".git").mkdir()
+
+        vm = _make_vm(exec_result=(True, "", ""))
+        vm_state = _base_state(shell=ShellConfig(shell_type="fish"))
+        exec_calls: list[list[str]] = []
+
+        async def exec_side_effect(cmd, **_kw):
+            exec_calls.append(cmd)
+            return (True, "", "")
+
+        vm.exec_command = AsyncMock(side_effect=exec_side_effect)
+        scp_calls: list[list[str]] = []
+
+        async def recording_run(cmd: list[str], **_kw) -> tuple[int, str, str]:
+            scp_calls.append(cmd)
+            return (0, "", "")
+
+        async def _run() -> SystemState:
+            v = Validator(vm, mac2nix_source=str(tmp_path))
+            with (
+                patch("mac2nix.vm.validator.async_run_command", side_effect=recording_run),
+                patch.object(SystemState, "from_json", return_value=vm_state),
+            ):
+                return await v._scan_vm()
+
+        result = asyncio.run(_run())
+        assert result is vm_state
+
+        # mkdir for the source copy, then the nix-run scan invocation.
+        assert len(exec_calls) == 2
+        mkdir_cmd, nix_run_cmd = exec_calls
+        assert mkdir_cmd == ["mkdir", "-p", Validator._REMOTE_SOURCE_DIR]
+
+        joined = nix_run_cmd[2]
+        assert f"nix run {Validator._REMOTE_SOURCE_DIR} --" in joined
+        assert str(tmp_path) not in joined
+
+        # The scp for the local source copy excludes ".git".
+        assert scp_calls, "expected an scp invocation for the local source copy"
+        source_scp_cmd = scp_calls[0]
+        sources = source_scp_cmd[14:-1]
+        source_names = {Path(src).name for src in sources}
+        assert source_names == {"flake.nix"}
+
+
+# ---------------------------------------------------------------------------
+# Validator._bootstrap_nix_darwin() — idempotency
+# ---------------------------------------------------------------------------
+
+
+class TestBootstrapIdempotency:
+    def test_skips_install_when_nix_already_present(self) -> None:
+        """When the profile-sourced `which nix` check succeeds, the install
+        commands (curl/chmod/installer) must never be invoked."""
+        vm = _make_vm(exec_result=(True, "", ""))
+
+        async def _run() -> None:
+            v = Validator(vm)
+            await v._bootstrap_nix_darwin()
+
+        asyncio.run(_run())
+
+        calls = [call.args[0] for call in vm.exec_command.call_args_list]
+        assert calls == [["bash", "-c", f"{_NIX_PROFILE_SOURCE} && which nix"]]
+        assert not any(NIX_INSTALLER_URL in " ".join(c) for c in calls)
+
 
 # ---------------------------------------------------------------------------
 # Validator.validate() — full pipeline
@@ -540,17 +673,16 @@ class TestValidatorValidate:
         assert any("bootstrap" in e for e in result.errors)
 
     def test_rebuild_failure_returns_early(self) -> None:
-        # All bootstrap steps succeed, darwin-rebuild switch fails
-        call_count = 0
-
+        # Bootstrap succeeds (Nix reports already installed); rebuild switch fails.
+        # Keyed off command content, not call position, so it's insensitive to how
+        # many exec_command calls bootstrap itself makes.
         async def exec_side_effect(cmd, **_kw):
-            nonlocal call_count
-            call_count += 1
-            # mkdir(1) + curl(2) + chmod(3) + installer(4) + nix-darwin bootstrap(5) succeed
-            # darwin-rebuild switch (6th call) fails
-            if call_count <= 5:
-                return (True, "admin", "")
-            return (False, "", "nix-darwin build error")
+            joined = " ".join(cmd)
+            if "which nix" in joined:
+                return (True, "", "")  # idempotency check succeeds
+            if "nix-darwin -- switch" in joined:
+                return (False, "", "nix-darwin build error")
+            return (True, "admin", "")  # mkdir and any other step succeeds
 
         vm = _make_vm()
         vm.exec_command = AsyncMock(side_effect=exec_side_effect)

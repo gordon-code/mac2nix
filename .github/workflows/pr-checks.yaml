@@ -30,12 +30,14 @@ jobs:
       - name: Test
         run: make test
 
-  integration:
-    needs: lint-and-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  # Unconditional and ungated (unlike nix-darwin-switch below) — every PR must
+  # build before merge. Read-only default GITHUB_TOKEN is safe even against
+  # fork PRs since this only runs `nix build`, no elevated permissions needed.
+  nix-integration:
+    if: github.event_name == 'pull_request'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
@@ -44,15 +46,95 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - name: Install tart
-        run: brew install cirruslabs/cli/tart
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
-      - name: Install sshpass
-        run: |
-          brew tap hudochenkov/sshpass
-          brew install sshpass
+      - name: Install sops and age
+        run: brew install sops age
 
-      - name: Integration tests
+      # Authenticates nix's github: flake-input fetches against the shared,
+      # rate-limited runner IP pool (see _nix_extra_access_tokens_args()).
+      - name: Nix build integration tests
         env:
-          MAC2NIX_BASE_VM: macos-tahoe-base
-        run: make test-integration
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: make test-nix
+
+  # Job-level scoping, not workflow-level `on.pull_request.paths` — a
+  # workflow-level filter leaves required checks stuck "Waiting for status"
+  # on PRs that don't touch these paths; a job-level skip reports success.
+  detect-changes:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    outputs:
+      vm-relevant: ${{ steps.check.outputs.vm-relevant }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Detect VM-relevant changes
+        id: check
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}" HEAD)
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(src/mac2nix/generators/|src/mac2nix/templates/|src/mac2nix/vm/|tests/generators/|tests/vm/|tests/vm_fixtures\.py)'; then
+            echo "vm-relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "vm-relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Invasive (applies a real nix-darwin switch to the runner) and gated:
+  # only runs when detect-changes flags VM/generator-relevant paths, and
+  # even then needs a maintainer's approval via the vm-validated environment.
+  #
+  # Runs natively, not via Tart, because nested macOS virtualization is
+  # unsupported on GitHub-hosted runners (see
+  # test_scaffold_switch_native.py's own docstring for the full rationale
+  # and safety gating) — safe here only because the runner itself is
+  # disposable. test_integration.py's VM-control-layer tests still can't
+  # run here regardless (they need an actual VM boot) and remain local-only
+  # via `make test-integration`.
+  nix-darwin-switch:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.vm-relevant == 'true'
+    runs-on: macos-latest
+    environment: vm-validated
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: make install
+
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      # Via Nix, not Homebrew, so these survive the Homebrew removal below —
+      # add_host() needs sops/age-keygen on PATH regardless of Homebrew's state.
+      - name: Install sops and age via nix
+        run: nix profile install nixpkgs#sops nixpkgs#age
+
+      # nix-darwin refuses to overwrite /etc files it doesn't manage with
+      # unrecognized content — the nix-installer-action writes its own
+      # nix.custom.conf, which nix-darwin then wants to own. A real user
+      # migrating an existing Nix install would hit this identically.
+      - name: Move pre-existing /etc/nix/nix.custom.conf out of nix-darwin's way
+        run: |
+          if [ -f /etc/nix/nix.custom.conf ]; then
+            sudo mv /etc/nix/nix.custom.conf /etc/nix/nix.custom.conf.before-nix-darwin
+          fi
+
+      # nix-homebrew's autoMigrate can't cleanly adopt this runner's heavily
+      # provisioned Homebrew (real content across many non-default taps) —
+      # migration cascaded through conflict after conflict. Wiping it first
+      # lets nix-homebrew do a normal fresh install instead. autoMigrate
+      # stays true in the template — real migration targets need it.
+      - name: Remove pre-existing Homebrew installation
+        run: sudo rm -rf /opt/homebrew
+
+      # Same GITHUB_TOKEN reasoning as nix-integration — sudo's env-stripping
+      # means this is threaded through as an explicit nix CLI arg, not NIX_CONFIG.
+      - name: Real nix-darwin switch (applied to this disposable runner)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: make test-nix-darwin-switch

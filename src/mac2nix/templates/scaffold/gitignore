@@ -1,0 +1,9 @@
+.direnv/
+result
+result-*
+
+# Defense-in-depth — real age keys are always generated outside this repo
+# (see `mac2nix add-host`), but these patterns guard against ever
+# accidentally checking one in.
+age/keys.txt
+*.agekey
