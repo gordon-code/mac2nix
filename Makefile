@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: install lint format typecheck test test-integration test-vm test-nix test-nix-darwin-switch prewarm-vm pull-base-vm test-quick clean all prek-install prek
+.PHONY: install lint format typecheck test test-integration test-vm test-nix test-nix-darwin-switch test-op-cli prewarm-vm pull-base-vm test-quick clean all prek-install prek
 
 install:
 	uv sync
@@ -46,6 +46,11 @@ test-nix:
 # Never invoke this on a real machine; it applies a genuine nix-darwin switch.
 test-nix-darwin-switch:
 	uv run pytest -m nix_darwin_switch --tb=long
+
+# Requires a real, signed-in `op` CLI and MAC2NIX_TEST_OP_VAULT set to a disposable
+# test vault — skips otherwise (see tests/test_onepassword.py's op_test_vault fixture).
+test-op-cli:
+	uv run pytest -m op_cli --tb=long
 
 prewarm-vm:
 	uv run python scripts/prewarm_vm.py

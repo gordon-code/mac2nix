@@ -75,14 +75,15 @@ include = ["src"]
 exclude = ["**/__pycache__"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+testpaths = ["tests"]
+pythonpath = ["src", "scripts"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = [
     "--strict-markers",
     "--tb=short",
-    "-m", "not integration and not nix_vm and not nix_build and not nix_darwin_switch",
+    "-m", "not integration and not nix_vm and not nix_build and not nix_darwin_switch and not op_cli",
 ]
 markers = [
     "integration: real VM tests — require tart + sshpass + base VM image",
@@ -90,6 +91,7 @@ markers = [
     "nix_vm: real VM-based apply-and-verify tests — require tart",
     "nix_build: real nix flake lock/build tests — never skipped, require nix + age + sops + network",
     "nix_darwin_switch: real nix-darwin switch applied to the running machine — CI-only, skips unless GITHUB_ACTIONS=true",
+    "op_cli: real 1Password CLI integration — requires op on PATH, signed in, and MAC2NIX_TEST_OP_VAULT set",
 ]
 cache_dir = ".cache/pytest"
 
