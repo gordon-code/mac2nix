@@ -1,4 +1,4 @@
-{ ... }:
+{ config, lib, pkgs, ... }:
 
 {
   # Shared Homebrew activation policy — not scanned cask/brew data, which is

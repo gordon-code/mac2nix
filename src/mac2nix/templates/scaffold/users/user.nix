@@ -1,4 +1,4 @@
-{ pkgs, lib, hostname, ... }:
+{ config, lib, pkgs, hostname, ... }:
 
 {
   imports = lib.optional (builtins.pathExists (../hosts/darwin + "/${hostname}/packages.nix")) (
