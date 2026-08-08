@@ -24,7 +24,7 @@ def is_available() -> bool:
     return shutil.which("op") is not None
 
 
-def is_signed_in() -> bool:
+def _is_signed_in() -> bool:
     """Check sign-in state without ever triggering an interactive prompt.
 
     `op signin` blocks on user interaction if not already authenticated;
@@ -44,13 +44,13 @@ def store_age_key(key_path: Path, *, vault: str, title: str) -> str:
     write that "succeeds" but silently stores the wrong (or no) content is
     worse than no backup, since it looks safe.
 
-    Deliberately does not pre-check `is_signed_in()` before attempting the
+    Deliberately does not pre-check `_is_signed_in()` before attempting the
     write — `op whoami` has a known failure mode where it reports "not
     signed in" while the local vault is still genuinely readable/writable
     (session-state can desync from what `op` actually has access to).
     Attempting the real operation and surfacing its own error message is a
     more reliable signal than a separate pre-flight check that can itself
-    be wrong; `is_signed_in()` is still available as its own function for
+    be wrong; `_is_signed_in()` is still available as its own function for
     callers that want a best-effort availability check.
     """
     if not is_available():
