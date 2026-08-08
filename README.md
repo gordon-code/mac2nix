@@ -14,6 +14,10 @@ uv sync
 uv run mac2nix --help
 ```
 
+## Runbooks
+
+- [YubiKey PIV login + sudo](docs/runbooks/yubikey-piv.md)
+
 ## License
 
 MIT
