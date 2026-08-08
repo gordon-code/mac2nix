@@ -17,11 +17,11 @@
 # reached, since buildMavenPackage's default `package` goal stops before that
 # lifecycle phase.
 {
-  lib,
   fetchFromGitHub,
   fetchurl,
   maven,
   jdk8,
+  runCommand,
 }:
 let
   apiClassicJar = fetchurl {
@@ -29,14 +29,17 @@ let
     hash = "sha256-xDCNvuGS3D8SUJEhZg0HG0b6vUQjxL+XFH4DnB0WLtg=";
   };
 
-  installApiClassic = ''
-    mvn -B install:install-file \
-      -Dfile=${apiClassicJar} \
-      -DgroupId=oracle.javacard \
-      -DartifactId=api_classic \
-      -Dversion=3.0.5 \
-      -Dpackaging=jar \
-      -Dmaven.repo.local=$out/.m2
+  # jcardsim's own pom.xml has a maven-install-plugin execution bound
+  # directly to the build lifecycle, reading `${env.JC_CLASSIC_HOME}/lib/
+  # api_classic.jar` -- a real, on-disk directory shaped exactly like a JC
+  # kit's own layout is what it actually needs, not a manually-run
+  # `install:install-file` invocation (verified against a real build: a
+  # separate manual install-file call put the jar in the local repo, but
+  # left this pom-bound execution failing on the literal, unexpanded
+  # "${env.JC_CLASSIC_HOME}" string, since the env var itself was never set).
+  jcClassicHome = runCommand "jc-classic-home" { } ''
+    mkdir -p $out/lib
+    cp ${apiClassicJar} $out/lib/api_classic.jar
   '';
 in
 maven.buildMavenPackage {
@@ -53,24 +56,45 @@ maven.buildMavenPackage {
   mvnJdk = jdk8;
   mvnGoal = "package";
   doCheck = false;
+  env.JC_CLASSIC_HOME = "${jcClassicHome}";
 
-  # api_classic must already be in the local repo before the dependency
-  # prefetch's own `mvn package` runs, or that prefetch itself fails outright
-  # trying (and failing) to resolve it from a real repo.
+  # Verified against a real build: Maven resolves a project's own
+  # compile-scope dependencies before running that same build's phase-bound
+  # plugin executions, so the pom-bound install-file execution (which
+  # would otherwise satisfy oracle.javacard:api_classic) can never run in
+  # time to help a single `mvn package` invocation compile itself -- this
+  # is exactly why upstream's own documented build is two separate
+  # invocations (`mvn initialize` then `mvn clean install`), not one.
+  # `afterDepsSetup` is an existing extension point in buildMavenPackage's
+  # own generated buildPhase (runs after the offline .m2 cache is staged,
+  # before the real `mvn package`) -- this is that first `mvn initialize`
+  # pass, scoped to the local repo copy the real build will use.
+  afterDepsSetup = ''
+    mvn initialize -Dmaven.repo.local=$mvnDeps/.m2
+  '';
+
+  # The dependency-prefetch derivation (fetchedMavenDeps) runs the full
+  # `mvn package` goal too, in non-offline mode -- it hits the exact same
+  # ordering problem, so it needs its own `mvn initialize` pass first,
+  # against its own local repo path ($out/.m2, not $mvnDeps/.m2).
   mvnFetchExtraArgs = {
-    preBuild = installApiClassic;
+    env.JC_CLASSIC_HOME = "${jcClassicHome}";
+    preBuild = ''
+      mvn initialize -Dmaven.repo.local=$out/.m2
+    '';
   };
-  # [ASSUMPTION: verify on first real build] lib.fakeHash is a deliberate
-  # placeholder, not an oversight -- this project's own dev sandbox has no
-  # network route to repo.maven.apache.org (confirmed: github.com/
-  # cache.nixos.org fetches all work fine from here; Maven Central does
-  # not, even with the build sandbox disabled, so the restriction sits
-  # below Nix's own sandboxing). Any environment with real network access
-  # (CI, a Tart VM) will report the correct hash on first build via Nix's
-  # standard "hash mismatch: got sha256-..." error -- replace this value
-  # with that real hash once available, the same way vpcd.nix's and
-  # pivapplet.nix's hashes were already verified for real in this session.
-  mvnHash = lib.fakeHash;
+  mvnHash = "sha256-LqPIhjDVFHjohWZXNd8lOgHK7AgRno6hkgByhuLtxzo="; # verified via a real build this session
+
+  # buildMavenPackage has no default installPhase -- the shaded jar
+  # (target/jcardsim-3.0.5-SNAPSHOT.jar, already replaced in place by the
+  # shade plugin's first execution per the build log) is the one the
+  # documented `-cp bin/:jcardsim-3.0.5-SNAPSHOT.jar` classpath usage
+  # expects -- not the separate -android.jar the second shade execution
+  # also produces, which is for a different (Android) target entirely.
+  installPhase = ''
+    mkdir -p $out/share/java
+    cp target/jcardsim-3.0.5-SNAPSHOT.jar $out/share/java/
+  '';
 
   meta = {
     description = "Pure-Java Card Runtime simulator (arekinath fork, vpcd-enabled)";

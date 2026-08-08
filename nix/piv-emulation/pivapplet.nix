@@ -19,7 +19,6 @@
 # at a 2.2.2 kit), from the same martinpaljak/oracle_javacard_sdks mirror
 # jcardsim.nix already uses and documents the trade-off for.
 {
-  lib,
   fetchFromGitHub,
   stdenv,
   jdk8,
@@ -30,7 +29,7 @@ let
     owner = "martinpaljak";
     repo = "oracle_javacard_sdks";
     rev = "6a75ec0d6913db236d354f154df7dbc9573d976d";
-    hash = lib.fakeHash;
+    hash = "sha256-RJTus6PjN5f+WfN+N44HIkSgFc8QHHIMY+Fps0M7XF4="; # verified via a real build this session
     sparseCheckout = [ "jc222_kit" ];
   };
 in
@@ -48,7 +47,7 @@ stdenv.mkDerivation {
     # plain committed file, not a submodule, so a normal fetch already
     # includes it.
     fetchSubmodules = true;
-    hash = lib.fakeHash;
+    hash = "sha256-Ecf/lv54dC9lUzuKTw/WU/vq1ptzgY3vHH26ZvQlLPo="; # verified via a real build this session
   };
 
   nativeBuildInputs = [
@@ -60,12 +59,23 @@ stdenv.mkDerivation {
 
   # build.xml's `dist` target builds ext/ant (ant-javacard) first, then
   # preprocesses+compiles+packages the applet -- see build.xml's own
-  # `dist`/`preprocess` targets. Real network access to Maven Central
-  # (ant-javacard's own build dependency) is required and not available in
-  # this project's dev sandbox -- see jcardsim.nix's identical note.
+  # `dist`/`preprocess` targets.
+  #
+  # PIV_SUPPORT_EC=false: verified against a real build and the actual
+  # source (not just build.xml's own property comments, which turned out
+  # to be misleading here) that `processGenAuthEcPlain()` -- gated only by
+  # `#if PIV_SUPPORT_EC`, not by PIV_USE_EC_PRECOMPHASH as build.xml's own
+  # doc comment implies -- unconditionally calls Signature.
+  # signPreComputedHash(), a JC3.0.4+-only API with no equivalent in the
+  # JC 2.2.2 target this derivation builds against (confirmed: setting
+  # PIV_USE_EC_PRECOMPHASH=false alone did not change the compile error at
+  # all). This project's own use (an RSA key in PIV slot 9a, per
+  # scripts/provision_piv_emulation.py) never needs EC/ECDSA support, so
+  # disabling it entirely sidesteps the incompatibility rather than fighting
+  # an API JC 2.2.2 genuinely does not have.
   buildPhase = ''
     runHook preBuild
-    ant dist
+    ant -DPIV_SUPPORT_EC=false dist
     runHook postBuild
   '';
 
