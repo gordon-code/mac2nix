@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: install lint format typecheck test test-integration test-vm test-nix test-nix-darwin-switch test-op-cli prewarm-vm pull-base-vm test-quick clean all prek-install prek
+.PHONY: install lint format typecheck test test-integration test-vm test-nix test-nix-darwin-switch test-piv-sudo-native test-op-cli prewarm-vm pull-base-vm test-quick clean all prek-install prek
 
 install:
 	uv sync
@@ -45,7 +45,14 @@ test-nix:
 # CI-only — skips unless GITHUB_ACTIONS=true (see the test module's own docstring).
 # Never invoke this on a real machine; it applies a genuine nix-darwin switch.
 test-nix-darwin-switch:
-	uv run pytest -m nix_darwin_switch --tb=long
+	uv run pytest tests/generators/test_scaffold_switch_native.py -m nix_darwin_switch --tb=long
+
+# CI-only, and must run as its own later step *after* test-nix-darwin-switch,
+# never combined into the same pytest invocation — see
+# tests/vm/test_piv_sudo_native.py's own docstring for why ordering here is a
+# real security requirement, not a style preference.
+test-piv-sudo-native:
+	uv run pytest tests/vm/test_piv_sudo_native.py -m nix_darwin_switch --tb=long
 
 # Requires a real, signed-in `op` CLI and MAC2NIX_TEST_OP_VAULT set to a disposable
 # test vault — skips otherwise (see tests/test_onepassword.py's op_test_vault fixture).

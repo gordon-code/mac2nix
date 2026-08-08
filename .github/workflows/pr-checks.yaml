@@ -75,7 +75,7 @@ jobs:
           git fetch origin "${{ github.base_ref }}" --depth=1
           changed=$(git diff --name-only "origin/${{ github.base_ref }}" HEAD)
           echo "$changed"
-          if echo "$changed" | grep -qE '^(src/mac2nix/generators/|src/mac2nix/templates/|src/mac2nix/vm/|tests/generators/|tests/vm/|tests/vm_fixtures\.py)'; then
+          if echo "$changed" | grep -qE '^(src/mac2nix/generators/|src/mac2nix/templates/|src/mac2nix/vm/|tests/generators/|tests/vm/|tests/vm_fixtures\.py|nix/piv-emulation/|scripts/provision_piv_emulation\.py|scripts/discover_usb_device\.py)'; then
             echo "vm-relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "vm-relevant=false" >> "$GITHUB_OUTPUT"
@@ -138,3 +138,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: make test-nix-darwin-switch
+
+      # vpcd's macOS registration trick needs *some* USB-enumerated device on
+      # this host to spoof against — confirmed to always exist inside a Tart
+      # guest (a synthetic keyboard), but a real GitHub-hosted runner's own
+      # USB population has no prior precedent anywhere. Discover, don't
+      # assume: scripts/discover_usb_device.py's own stdout is already
+      # GITHUB_OUTPUT-formatted (vendor_id=.../product_id=...).
+      - name: Discover a baseline USB device for vpcd
+        id: discover-usb
+        run: |
+          if uv run python scripts/discover_usb_device.py >> "$GITHUB_OUTPUT"; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Must run *after* the switch above, never before or concurrently —
+      # see tests/vm/test_piv_sudo_native.py's own docstring: this splices a
+      # live PAM module into this runner's real /etc/pam.d/sudo_local for
+      # the rest of the job, so nothing earlier may still depend on it.
+      - name: Real E2E PIV sudo/PAM test (native runner)
+        if: steps.discover-usb.outputs.found == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAC2NIX_PIV_VENDOR_ID: ${{ steps.discover-usb.outputs.vendor_id }}
+          MAC2NIX_PIV_PRODUCT_ID: ${{ steps.discover-usb.outputs.product_id }}
+        run: make test-piv-sudo-native
+
+      # Accepted, documented fallback, not a failure — Tart's own leg
+      # (test_piv_sudo_vm.py) remains the sole guaranteed E2E coverage of
+      # the sudo/PAM path regardless of this runner's own USB population.
+      - name: Native-runner PIV leg skipped (no usable USB device on this runner)
+        if: steps.discover-usb.outputs.found != 'true'
+        run: |
+          echo "::warning::No usable baseline USB device found on this runner image — the native-runner PIV sudo/PAM leg is infeasible here. Tart's own leg (test_piv_sudo_vm.py) remains the sole guaranteed E2E coverage."
