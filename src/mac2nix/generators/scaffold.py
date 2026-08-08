@@ -135,6 +135,10 @@ def generate_age_key(username: str, *, key_dir: Path | None = None) -> str:
         raise ScaffoldError(msg)
 
     key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.parent.chmod(0o700)
+    actual_dir_mode = stat.S_IMODE(key_path.parent.stat().st_mode)
+    if actual_dir_mode != 0o700:
+        raise ScaffoldError(f"failed to set age key directory permissions to 0700 (got {oct(actual_dir_mode)})")
 
     result = subprocess.run(  # noqa: S603
         ["age-keygen", "-o", str(key_path)],  # noqa: S607

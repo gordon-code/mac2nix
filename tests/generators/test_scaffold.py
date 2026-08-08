@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import stat
@@ -15,7 +16,8 @@ import pytest
 import yaml
 
 from mac2nix.generators import Mac2NixError
-from mac2nix.generators.scaffold import ScaffoldError, add_host, generate_age_key, init_framework
+from mac2nix.generators import scaffold as scaffold_module
+from mac2nix.generators.scaffold import ScaffoldError, add_host, age_key_path, generate_age_key, init_framework
 from tests._scaffold_helpers import _has_add_host_crypto_deps, _has_age_keygen, _redirect_age_keys
 
 _EXPECTED_FRAMEWORK_FILES = [
@@ -119,6 +121,7 @@ class TestGenerateAgeKey:
         key_path = key_dir / "keys.txt"
         assert key_path.is_file()
         assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(key_dir.stat().st_mode) == 0o700
 
         public_key_line = next(line for line in key_path.read_text().splitlines() if line.startswith("# public key:"))
         assert public_key_line.removeprefix("# public key:").strip() == fingerprint
@@ -136,6 +139,10 @@ class TestGenerateAgeKey:
 
         assert key_path.stat().st_mtime_ns == before_mtime
         assert key_path.read_text() == before_content
+
+
+def test_age_key_path_matches_internal_construction() -> None:
+    assert age_key_path("alice") == Path("/Users/alice") / ".config" / "sops" / "age" / "keys.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +309,134 @@ class TestAddHostFiles:
         rules = sops_config["creation_rules"]
         assert len(rules) == 1
         assert rules[0]["key_groups"] == [{"age": ["age1hosta-fingerprint"]}]
+
+    def test_second_host_same_username_failure_leaves_shared_user_file_untouched(self, tmp_path: Path) -> None:
+        """A second host sharing an existing username must not have its shared
+        users/<name>.nix rolled back if that second host's add_host() call fails —
+        user_file_created is False for it, since the file predates this call."""
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+
+        with _mocked_crypto("age1hosta-fingerprint"):
+            add_host(output_dir, "hosta", "shareduser", confirm_backup=lambda _: True)
+
+        user_file = output_dir / "users" / "shareduser.nix"
+        before_mtime = user_file.stat().st_mtime_ns
+        before_content = user_file.read_text()
+
+        with (
+            patch("mac2nix.generators.scaffold.generate_age_key", return_value="age1hostb-fingerprint"),
+            patch(
+                "mac2nix.generators.scaffold._create_host_secrets_file",
+                side_effect=ScaffoldError("sops failed for testing"),
+            ),
+            pytest.raises(ScaffoldError, match="sops failed for testing"),
+        ):
+            add_host(output_dir, "hostb", "shareduser", confirm_backup=lambda _: True)
+
+        assert not (output_dir / "hosts" / "darwin" / "hostb").exists()
+        assert user_file.stat().st_mtime_ns == before_mtime
+        assert user_file.read_text() == before_content
+
+    def test_cleanup_time_regeneration_failure_does_not_mask_original_exception(self, tmp_path: Path) -> None:
+        """If cleanup's own re-invocation of _regenerate_sops_yaml() fails, the
+        ORIGINAL add_host() failure must still propagate — not the cleanup-time one."""
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+
+        real_regenerate_sops_yaml = scaffold_module._regenerate_sops_yaml
+        calls: list[int] = []
+
+        def flaky_regenerate_sops_yaml(output_dir: Path, metas: list[dict]) -> None:
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("cleanup-time regen failure")
+            real_regenerate_sops_yaml(output_dir, metas)
+
+        with (
+            patch("mac2nix.generators.scaffold.generate_age_key", return_value="age1hosta-fingerprint"),
+            patch(
+                "mac2nix.generators.scaffold._create_host_secrets_file",
+                side_effect=ScaffoldError("sops failed for testing"),
+            ),
+            patch("mac2nix.generators.scaffold._regenerate_sops_yaml", side_effect=flaky_regenerate_sops_yaml),
+            pytest.raises(ScaffoldError, match="sops failed for testing"),
+        ):
+            add_host(output_dir, "hosta", "alice", confirm_backup=lambda _: True)
+
+    def test_age_key_path_inside_output_dir_raises_before_generating_key(self, tmp_path: Path) -> None:
+        """Guards against a resolved age-key path landing inside output_dir — a real
+        secret-leak risk since the CLI instructs users to push output_dir to a
+        (potentially public) git remote."""
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+
+        with (
+            _redirect_age_keys(output_dir),
+            patch("mac2nix.generators.scaffold.generate_age_key") as mock_generate,
+            pytest.raises(ScaffoldError, match="refusing to generate an age key inside"),
+        ):
+            add_host(output_dir, "hosta", "alice", confirm_backup=lambda _: True)
+
+        mock_generate.assert_not_called()
+        assert not (output_dir / "hosts" / "darwin" / "hosta").exists()
+        assert not (output_dir / "users" / "alice.nix").exists()
+
+    def test_missing_state_file_produces_no_warning_and_creates_state_file(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+        assert not (output_dir / ".mac2nix-state.json").exists()
+
+        with (
+            _mocked_crypto("age1hosta-fingerprint"),
+            caplog.at_level(logging.WARNING, logger="mac2nix.generators.scaffold"),
+        ):
+            add_host(output_dir, "hosta", "alice", confirm_backup=lambda _: True)
+
+        assert not caplog.records
+        stored = json.loads((output_dir / ".mac2nix-state.json").read_text())
+        assert "flake_hosts_block_hash" in stored
+
+    def test_hand_edited_flake_hosts_block_triggers_warning_on_next_add_host(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+
+        with _mocked_crypto("age1hosta-fingerprint"):
+            add_host(output_dir, "hosta", "alice", confirm_backup=lambda _: True)
+
+        flake_path = output_dir / "flake.nix"
+        flake_path.write_text(flake_path.read_text().replace("hosta", "HOSTA-HAND-EDITED"))
+
+        with (
+            _mocked_crypto("age1hostb-fingerprint"),
+            caplog.at_level(logging.WARNING, logger="mac2nix.generators.scaffold"),
+        ):
+            add_host(output_dir, "hostb", "bob", confirm_backup=lambda _: True)
+
+        assert "doesn't match what add-host last wrote" in caplog.text
+
+    def test_corrupt_state_file_handled_gracefully(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+
+        with _mocked_crypto("age1hosta-fingerprint"):
+            add_host(output_dir, "hosta", "alice", confirm_backup=lambda _: True)
+
+        (output_dir / ".mac2nix-state.json").write_text("{not valid json")
+
+        with (
+            _mocked_crypto("age1hostb-fingerprint"),
+            caplog.at_level(logging.WARNING, logger="mac2nix.generators.scaffold"),
+        ):
+            add_host(output_dir, "hostb", "bob", confirm_backup=lambda _: True)
+
+        assert not caplog.records
+        stored = json.loads((output_dir / ".mac2nix-state.json").read_text())
+        assert "flake_hosts_block_hash" in stored
 
 
 # ---------------------------------------------------------------------------
