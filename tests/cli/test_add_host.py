@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from mac2nix import onepassword
-from mac2nix.cli import main
+from mac2nix.cli import _confirm_or_default, _run_nix_flake_lock, main
 from mac2nix.generators.scaffold import init_framework
 from tests._scaffold_helpers import _has_add_host_crypto_deps, _redirect_age_keys
 
@@ -296,3 +296,65 @@ class TestAddHostValidation:
         assert "username" in result.output.lower()
         mock_run.assert_not_called()
         assert not (output_dir / "hosts").exists()
+
+
+class TestRunNixFlakeLockGuard:
+    """_run_nix_flake_lock's own shutil.which("nix") guard, exercised directly — every
+    add-host test that reaches the flake-lock prompt mocks _run_nix_flake_lock wholesale
+    and never triggers this guard."""
+
+    def test_raises_when_nix_not_on_path(self, tmp_path: Path) -> None:
+        with (
+            patch("mac2nix.cli.shutil.which", return_value=None),
+            pytest.raises(click.ClickException, match="nix is not installed or not on PATH"),
+        ):
+            _run_nix_flake_lock(tmp_path)
+
+
+class TestConfirmOrDefault:
+    """_confirm_or_default must resolve to *default* on real EOF, but still let a
+    genuine Ctrl-C abort — both surface as click.Abort from click.confirm(), so the
+    two must be told apart via the suppressed exception's __context__."""
+
+    def test_eof_resolves_to_default(self) -> None:
+        with patch("mac2nix.cli.click.confirm", side_effect=click.exceptions.Abort()):
+            assert _confirm_or_default("proceed?", default=True) is True
+            assert _confirm_or_default("proceed?", default=False) is False
+
+    def test_keyboard_interrupt_propagates_instead_of_defaulting(self) -> None:
+        def _raise_from_keyboard_interrupt(*_args: object, **_kwargs: object) -> bool:
+            try:
+                raise KeyboardInterrupt
+            except KeyboardInterrupt:
+                raise click.exceptions.Abort from None
+
+        with (
+            patch("mac2nix.cli.click.confirm", side_effect=_raise_from_keyboard_interrupt),
+            pytest.raises(click.Abort),
+        ):
+            _confirm_or_default("proceed?", default=True)
+
+    def test_real_eof_at_trailing_prompts_defaults_and_completes(self, tmp_path: Path) -> None:
+        """Exhausting stdin at the two optional trailing prompts (register-another,
+        run-flake-lock) must complete successfully with defaults applied, not abort
+        a command that already registered a host — the end-to-end regression this
+        fix targets."""
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+
+        runner = CliRunner()
+        with (
+            _redirect_age_keys(tmp_path / "age-keys"),
+            patch("mac2nix.cli._run_nix_flake_lock") as mock_lock,
+        ):
+            result = runner.invoke(
+                main,
+                ["add-host", str(output_dir), "--hostname", "myhost", "--username", "alice"],
+                input="y\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (output_dir / "hosts" / "darwin" / "myhost").is_dir()
+        # "Register another host?" defaults False on EOF (no second host); "Run nix
+        # flake lock now?" defaults True on EOF, so the (mocked) lock step still runs.
+        mock_lock.assert_called_once()

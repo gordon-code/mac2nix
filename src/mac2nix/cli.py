@@ -258,10 +258,23 @@ def _confirm_or_default(prompt: str, *, default: bool) -> bool:
     earlier in this invocation is already fully committed, so an exhausted
     stdin here should behave like silently declining, not like aborting a
     command that already did its real work.
+
+    Note: `click.confirm()` catches EOFError internally and re-raises it as
+    `click.Abort` — that's what must be caught here, not EOFError. But
+    `click.confirm()` converts a real KeyboardInterrupt to `click.Abort` the
+    exact same way, so catching `click.Abort` unconditionally would also
+    swallow a genuine Ctrl-C at these prompts (defaulting to `True` on the
+    "run nix flake lock now?" prompt would execute a real subprocess despite
+    the user's explicit interrupt). `Abort()` is raised via `from None`
+    inside `except (KeyboardInterrupt, EOFError):`, which suppresses the
+    traceback but still sets `__context__` to the real underlying exception —
+    check it to tell the two apart and let a real interrupt actually abort.
     """
     try:
         return click.confirm(prompt, default=default)
-    except EOFError:
+    except click.Abort as exc:
+        if isinstance(exc.__context__, KeyboardInterrupt):
+            raise
         return default
 
 
@@ -341,7 +354,7 @@ def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op
                 current_system,
                 confirm_backup=lambda fp: _confirm_backup(fp, current_username, current_hostname),
             )
-        except EOFError:
+        except click.Abort:
             raise
         except Exception as exc:
             raise click.ClickException(str(exc)) from exc
