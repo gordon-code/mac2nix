@@ -344,7 +344,8 @@ class TestConfirmOrDefault:
 
         runner = CliRunner()
         with (
-            _redirect_age_keys(tmp_path / "age-keys"),
+            patch("mac2nix.generators.scaffold.generate_age_key", return_value="age1myhost-fingerprint"),
+            patch("mac2nix.generators.scaffold._create_host_secrets_file"),
             patch("mac2nix.cli._run_nix_flake_lock") as mock_lock,
         ):
             result = runner.invoke(
