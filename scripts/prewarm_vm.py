@@ -24,7 +24,6 @@ from mac2nix.vm._utils import VMError
 from mac2nix.vm.manager import BASE_IMAGE_NAME, BASE_IMAGE_REF, TartVMManager, pull_base_image_if_missing
 from mac2nix.vm.validator import NIX_INSTALLER_URL
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 PREWARMED_VM_NAME = "mac2nix-nix-base"
@@ -74,8 +73,12 @@ async def _prewarm() -> None:
 
     logger.info("Cloning %r -> %r", BASE_IMAGE_NAME, PREWARMED_VM_NAME)
     vm = TartVMManager(BASE_IMAGE_NAME)
-    await vm.clone(PREWARMED_VM_NAME)
-    await vm.start()
+    try:
+        await vm.clone(PREWARMED_VM_NAME)
+        await vm.start()
+    except VMError:
+        await vm.cleanup()
+        raise
     try:
         await _install_nix(vm)
     finally:
@@ -87,6 +90,11 @@ async def _prewarm() -> None:
 
 
 def main() -> int:
+    # Configured here, not at module scope — this module is imported by
+    # tests/test_prewarm_vm.py (via pythonpath), and a module-scope
+    # basicConfig() would mutate the root logger for the whole pytest
+    # process the moment that test module is collected.
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         asyncio.run(_prewarm())
     except VMError as exc:
