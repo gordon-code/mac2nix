@@ -804,6 +804,101 @@ class TestExecCommand:
         assert success is False
         assert "IP" in stderr or "ip" in stderr.lower()
 
+    def test_transient_auth_failure_triggers_retry(self) -> None:
+        call_count = 0
+
+        async def _run() -> tuple[bool, str, str]:
+            nonlocal call_count
+            mgr = _cloned_manager("auth-retry-vm")
+
+            async def flaky_ssh(ip, user, pw, cmd, *, timeout):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return (False, "", "Permission denied, please try again.")
+                return (True, "ok", "")
+
+            with (
+                patch.object(mgr, "get_ip", new=AsyncMock(return_value="10.0.0.1")),
+                patch("mac2nix.vm.manager.async_ssh_exec", side_effect=flaky_ssh),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                return await mgr.exec_command(["ls"], timeout=30)
+
+        success, _stdout, _ = asyncio.run(_run())
+        assert success is True
+        assert call_count == 2
+
+    def test_transient_auth_retry_does_not_double_timeout(self) -> None:
+        timeouts_used: list[int] = []
+
+        async def _run() -> None:
+            mgr = _cloned_manager("auth-retry-timeout-vm")
+
+            async def recording_ssh(ip, user, pw, cmd, *, timeout):
+                timeouts_used.append(timeout)
+                return (False, "", "Permission denied, please try again.")
+
+            with (
+                patch.object(mgr, "get_ip", new=AsyncMock(return_value="10.0.0.1")),
+                patch("mac2nix.vm.manager.async_ssh_exec", side_effect=recording_ssh),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                await mgr.exec_command(["ls"], timeout=30)
+
+        asyncio.run(_run())
+        # Unlike the disconnect retry, this is a same-connection settling
+        # race, not a slow/dropped connection — timeout stays as given.
+        assert timeouts_used == [30, 30]
+
+    def test_transient_auth_retry_does_not_clear_cached_ip(self) -> None:
+        async def _run() -> None:
+            mgr = _cloned_manager("auth-retry-cache-vm")
+            mgr._cached_ip = "10.0.0.1"
+
+            async def flaky_ssh(ip, user, pw, cmd, *, timeout):
+                return (False, "", "Permission denied, please try again.")
+
+            with (
+                patch.object(mgr, "get_ip", new=AsyncMock(return_value="10.0.0.1")),
+                patch("mac2nix.vm.manager.async_ssh_exec", side_effect=flaky_ssh),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                await mgr.exec_command(["ls"], timeout=30)
+
+            # Unlike a real disconnect, the IP hasn't changed — no reason to
+            # force a re-lookup.
+            assert mgr._cached_ip == "10.0.0.1"
+
+        asyncio.run(_run())
+
+    def test_transient_auth_failure_still_falls_through_to_disconnect_retry_when_persistent(self) -> None:
+        # If the auth-failure retry also fails, exec_command should simply
+        # return the failure — it must not also match _is_disconnect and
+        # trigger a second, different retry path for the same stderr.
+        call_count = 0
+
+        async def _run() -> tuple[bool, str, str]:
+            nonlocal call_count
+            mgr = _cloned_manager("auth-persistent-vm")
+
+            async def always_denied_ssh(ip, user, pw, cmd, *, timeout):
+                nonlocal call_count
+                call_count += 1
+                return (False, "", "Permission denied, please try again.")
+
+            with (
+                patch.object(mgr, "get_ip", new=AsyncMock(return_value="10.0.0.1")),
+                patch("mac2nix.vm.manager.async_ssh_exec", side_effect=always_denied_ssh),
+                patch("mac2nix.vm.manager.asyncio.sleep", new=AsyncMock()),
+            ):
+                return await mgr.exec_command(["ls"], timeout=30)
+
+        success, _stdout, stderr = asyncio.run(_run())
+        assert success is False
+        assert call_count == 2
+        assert "Permission denied" in stderr
+
     def test_requires_clone(self) -> None:
         async def _run() -> None:
             mgr = _make_manager()

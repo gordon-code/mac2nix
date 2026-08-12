@@ -425,6 +425,52 @@ class TestValidatorCopyFlake:
 
         asyncio.run(_run())  # Should not raise
 
+    def test_scp_transient_auth_failure_retries_and_succeeds(self) -> None:
+        # scp bypasses exec_command()'s own retry entirely — this proves
+        # _copy_flake_to_vm has its own equivalent for the same known
+        # boot-settling auth race (reproduced empirically across real VM runs).
+        vm = _make_vm(exec_result=(True, "", ""))
+        call_count = 0
+
+        async def flaky_run(cmd: list[str], **_kw: object) -> tuple[int, str, str]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return (255, "", "Permission denied, please try again.")
+            return (0, "", "")
+
+        async def _run() -> None:
+            v = Validator(vm)
+            with (
+                patch("mac2nix.vm.validator.async_run_command", side_effect=flaky_run),
+                patch("mac2nix.vm.validator.asyncio.sleep", new=AsyncMock()),
+            ):
+                await v._copy_flake_to_vm(Path("/tmp/flake"))
+
+        asyncio.run(_run())  # Should not raise
+        assert call_count == 2
+
+    def test_scp_persistent_transient_auth_failure_raises(self) -> None:
+        vm = _make_vm(exec_result=(True, "", ""))
+        call_count = 0
+
+        async def always_denied_run(cmd: list[str], **_kw: object) -> tuple[int, str, str]:
+            nonlocal call_count
+            call_count += 1
+            return (255, "", "Permission denied, please try again.")
+
+        async def _run() -> None:
+            v = Validator(vm)
+            with (
+                patch("mac2nix.vm.validator.async_run_command", side_effect=always_denied_run),
+                patch("mac2nix.vm.validator.asyncio.sleep", new=AsyncMock()),
+            ):
+                await v._copy_flake_to_vm(Path("/tmp/flake"))
+
+        with pytest.raises(VMError, match="scp flake"):
+            asyncio.run(_run())
+        assert call_count == 2  # retried exactly once, then gave up
+
     def test_scp_cmd_contains_sshpass(self) -> None:
         vm = _make_vm(exec_result=(True, "", ""))
         captured: list[list[str]] = []

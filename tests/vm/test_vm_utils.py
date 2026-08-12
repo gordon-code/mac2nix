@@ -15,6 +15,7 @@ from mac2nix.vm._utils import (
     async_run_command,
     async_ssh_exec,
     is_sshpass_available,
+    is_transient_auth_failure,
 )
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,37 @@ class TestIsToolAvailable:
             is_sshpass_available()
 
         assert calls == ["sshpass"]
+
+
+# ---------------------------------------------------------------------------
+# is_transient_auth_failure()
+# ---------------------------------------------------------------------------
+
+
+class TestIsTransientAuthFailure:
+    def test_matches_permission_denied_please_try_again(self) -> None:
+        assert is_transient_auth_failure("Permission denied, please try again.")
+
+    def test_matches_case_insensitively(self) -> None:
+        assert is_transient_auth_failure("PERMISSION DENIED, PLEASE TRY AGAIN.")
+
+    def test_matches_within_larger_stderr_blob(self) -> None:
+        stderr = (
+            "Permission denied, please try again.\r\n"
+            "admin@192.168.64.4: Permission denied (publickey,password,keyboard-interactive)."
+        )
+        assert is_transient_auth_failure(stderr)
+
+    def test_bare_permission_denied_does_not_match(self) -> None:
+        # The final, non-retryable summary line lacks "please try again" —
+        # must not be conflated with the mid-negotiation retry prompt.
+        assert not is_transient_auth_failure("admin@10.0.0.1: Permission denied (publickey,password).")
+
+    def test_unrelated_stderr_does_not_match(self) -> None:
+        assert not is_transient_auth_failure("command not found")
+
+    def test_empty_stderr_does_not_match(self) -> None:
+        assert not is_transient_auth_failure("")
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ from mac2nix.vm._utils import (
     VMTimeoutError,
     async_run_command,
     async_ssh_exec,
+    is_transient_auth_failure,
 )
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,10 @@ class TartVMManager:
         """Execute *cmd* inside the VM via SSH.
 
         Detects transient SSH disconnects and retries once with ``timeout * 2``.
+        Also retries once (after a short delay, same IP) on the known
+        boot-settling auth race described in :func:`is_transient_auth_failure`
+        — `wait_ready()`'s own two-consecutive-success check isn't always
+        sufficient, reproduced empirically across real VM runs.
 
         Returns:
             Tuple of (success, stdout, stderr).
@@ -313,6 +318,13 @@ class TartVMManager:
             return False, "", "Could not get VM IP address"
 
         success, out, err = await self._ssh_exec_raw(ip, cmd, timeout=timeout)
+
+        if not success and is_transient_auth_failure(err):
+            logger.info("Transient boot-settling auth failure for %r — retrying once in 3s", clone)
+            await asyncio.sleep(3)
+            success, out, err = await self._ssh_exec_raw(ip, cmd, timeout=timeout)
+            if not success:
+                logger.warning("Auth-failure retry also failed for %r: %s", clone, err.strip())
 
         # Detect transient disconnect and retry once.
         if not success and self._is_disconnect(err):

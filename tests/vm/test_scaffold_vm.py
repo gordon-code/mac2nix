@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from mac2nix.generators.scaffold import add_host, init_framework
-from mac2nix.vm._utils import VMError, async_run_command
+from mac2nix.vm._utils import VMError, async_run_command, is_transient_auth_failure
 from mac2nix.vm.manager import TartVMManager
 from mac2nix.vm.validator import Validator
 
@@ -66,10 +66,27 @@ async def _copy_age_key_to_vm(vm: TartVMManager, local_key_path: Path, username:
         "UserKnownHostsFile=/dev/null",
         "-o",
         "LogLevel=ERROR",
+        # PreferredAuthentications/PubkeyAuthentication: see
+        # async_ssh_exec()'s own comment in _utils.py — without these, ssh
+        # tries the calling machine's own default identity files first,
+        # which can exhaust the VM's MaxAuthTries before password auth is
+        # ever offered. Confirmed as a real, reproducible failure here
+        # ("Too many authentication failures"), not mere flakiness — this
+        # scp call was missing them despite this docstring's own claim to
+        # mirror Validator._copy_flake_to_vm()'s security pattern in full.
+        "-o",
+        "PreferredAuthentications=password",
+        "-o",
+        "PubkeyAuthentication=no",
         str(local_key_path),
         f"{vm.vm_user}@{ip}:{remote_dir}/keys.txt",
     ]
     returncode, _stdout, stderr = await async_run_command(scp_cmd, timeout=30, env={"SSHPASS": vm.vm_password})
+    if returncode != 0 and is_transient_auth_failure(stderr):
+        # Same boot-settling auth race as TartVMManager.exec_command() —
+        # confirmed empirically here across real VM runs, not flakiness.
+        await asyncio.sleep(3)
+        returncode, _stdout, stderr = await async_run_command(scp_cmd, timeout=30, env={"SSHPASS": vm.vm_password})
     if returncode != 0:
         raise VMError(f"scp age key to VM failed (exit {returncode}): {stderr.strip()}")
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import tempfile
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from mac2nix.models.system_state import SystemState
-from mac2nix.vm._utils import VMError, async_run_command
+from mac2nix.vm._utils import VMError, async_run_command, is_transient_auth_failure
 from mac2nix.vm.manager import TartVMManager
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,15 @@ class Validator:
         returncode, _stdout, stderr = await async_run_command(
             scp_cmd, timeout=120, env={"SSHPASS": self._vm.vm_password}
         )
+        if returncode != 0 and is_transient_auth_failure(stderr):
+            # Same boot-settling auth race documented on
+            # TartVMManager.exec_command() — scp bypasses that retry entirely
+            # since it never goes through exec_command(), so it needs its own.
+            logger.info("Transient boot-settling auth failure copying %s — retrying once in 3s", what)
+            await asyncio.sleep(3)
+            returncode, _stdout, stderr = await async_run_command(
+                scp_cmd, timeout=120, env={"SSHPASS": self._vm.vm_password}
+            )
         if returncode != 0:
             raise VMError(f"scp {what} to VM failed (exit {returncode}): {stderr.strip()}")
 

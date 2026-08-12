@@ -39,6 +39,18 @@ def is_sshpass_available() -> bool:
     return shutil.which("sshpass") is not None
 
 
+def is_transient_auth_failure(stderr: str) -> bool:
+    """Return True if *stderr* matches the known VM-boot-settling auth race.
+
+    A freshly-booted VM can briefly reject the exact same credentials moments
+    after `TartVMManager.wait_ready()` itself already confirmed two
+    consecutive successful SSH connections — reproduced empirically across
+    real VM runs (account/password state still settling). Not a real
+    credential mismatch: retrying once after a short delay resolves it.
+    """
+    return "permission denied, please try again" in stderr.lower()
+
+
 # ---------------------------------------------------------------------------
 # Async subprocess helpers
 # ---------------------------------------------------------------------------
