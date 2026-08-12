@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import logging
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -114,7 +115,50 @@ def _install_vpcd_bundle(vpcd_store_path: Path, vendor_id: int, product_id: int)
     _run(["sudo", "killall", "-SIGKILL", "-m", ".*com.apple.ifdreader"], check=False)
 
 
-def _start_jcardsim(jcardsim_jar: Path, pivapplet_classes: Path) -> subprocess.Popen[bytes]:
+def _wait_for_vpcd_listener(max_attempts: int = 30, delay_seconds: float = 1.0) -> None:
+    """Poll until vpcd's TCP listener accepts a connection.
+
+    Killing ifdreader only *asks* launchd to respawn it -- that process still
+    has to come back up, rediscover the just-replaced bundle, and have the
+    bundle's own vpcd code bind its listening socket before anything can
+    connect. jcardsim's VSmartCard is the *client* side of that socket (it
+    dials out, it never listens -- confirmed via a real local repro: a bare
+    `java ... VSmartCard` run against a not-yet-ready port raised
+    `java.net.ConnectException: Connection refused` immediately, which
+    `_start_jcardsim`'s 2-second poll then misreported as "process exited
+    immediately", i.e. a build problem it never was). Without this wait,
+    starting VSmartCard right after the kill is a real, reproducible race,
+    not flakiness.
+    """
+    last_error: OSError | None = None
+    for attempt in range(max_attempts):
+        try:
+            with socket.create_connection((_JCARDSIM_HOST, _JCARDSIM_VPCD_PORT), timeout=2):
+                return
+        except OSError as exc:
+            last_error = exc
+            logger.debug("vpcd listener not ready yet (attempt %d/%d): %s", attempt + 1, max_attempts, exc)
+            time.sleep(delay_seconds)
+
+    # Never gave a real signal to distinguish "driver registration failed"
+    # (frankmorgner/vsmartcard#303's documented `(null):(null)` entry in
+    # system_profiler, or "new device skipped" in the CryptoTokenKit log --
+    # both real, confirmed macOS failure modes for this exact mechanism)
+    # from any other cause. Capturing both here so a real failure carries
+    # its own root cause instead of requiring a separate repro to diagnose.
+    smartcards = _run(["system_profiler", "SPSmartCardsDataType"], check=False)
+    ctk_log = _run(
+        ["log", "show", "--predicate", '(subsystem == "com.apple.CryptoTokenKit")', "--info", "--last", "1m"],
+        check=False,
+    )
+    raise ProvisioningError(
+        f"vpcd never started listening on {_JCARDSIM_HOST}:{_JCARDSIM_VPCD_PORT}: {last_error}\n"
+        f"system_profiler SPSmartCardsDataType:\n{smartcards.stdout}\n"
+        f"CryptoTokenKit log (last 1m):\n{ctk_log.stdout}"
+    )
+
+
+def _start_jcardsim(jcardsim_jar: Path, pivapplet_classes: Path) -> subprocess.Popen[str]:
     jcardsim_cfg = Path("jcardsim-mac2nix.cfg")
     jcardsim_cfg.write_text(
         f"com.licel.jcardsim.card.applet.0.AID={_PIV_AID}\n"
@@ -125,14 +169,20 @@ def _start_jcardsim(jcardsim_jar: Path, pivapplet_classes: Path) -> subprocess.P
     classpath = f"{pivapplet_classes}:{jcardsim_jar}"
     process = subprocess.Popen(  # noqa: S603
         ["java", "-noverify", "-cp", classpath, "com.licel.jcardsim.remote.VSmartCard", str(jcardsim_cfg)],  # noqa: S607
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     time.sleep(2)  # let the remote interface bind before anything tries to select the applet
     if process.poll() is not None:
-        raise ProvisioningError(
-            "jcardsim's VSmartCard process exited immediately -- check jcardsim/PivApplet build output"
-        )
+        # Captured, not DEVNULL'd -- a silent crash here previously required a
+        # separate local repro to diagnose (real incident: jcardsim's
+        # VSmartCard is a TCP *client* that fails fast with a
+        # ConnectException if vpcd isn't listening yet, which surfaced only
+        # as "exited immediately" with no way to tell that apart from an
+        # actual classpath/build problem).
+        output = process.stdout.read() if process.stdout else ""
+        raise ProvisioningError(f"jcardsim's VSmartCard process exited immediately:\n{output}")
     return process
 
 
@@ -198,6 +248,7 @@ def provision(vendor_id: int, product_id: int) -> None:
     pivapplet_path = _nix_build("pivapplet")
 
     _install_vpcd_bundle(vpcd_path, vendor_id, product_id)
+    _wait_for_vpcd_listener()
 
     jcardsim_jar_candidates = list((jcardsim_path / "share").glob("**/jcardsim*.jar")) or list(
         jcardsim_path.glob("**/jcardsim*.jar")

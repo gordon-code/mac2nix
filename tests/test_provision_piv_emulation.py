@@ -69,6 +69,61 @@ class TestStartJcardsim:
         assert result is live_process
 
 
+class TestWaitForVpcdListener:
+    def test_returns_immediately_once_listener_accepts(self) -> None:
+        with (
+            patch("provision_piv_emulation.socket.create_connection") as mock_connect,
+            patch("provision_piv_emulation.time.sleep") as mock_sleep,
+        ):
+            provision_piv_emulation._wait_for_vpcd_listener(max_attempts=5)
+        assert mock_connect.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_retries_on_connection_refused_then_succeeds(self) -> None:
+        call_count = 0
+
+        def _flaky_connect(*_args: object, **_kwargs: object) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionRefusedError("Connection refused")
+            return MagicMock()
+
+        with (
+            patch("provision_piv_emulation.socket.create_connection", side_effect=_flaky_connect),
+            patch("provision_piv_emulation.time.sleep") as mock_sleep,
+        ):
+            provision_piv_emulation._wait_for_vpcd_listener(max_attempts=5)
+        assert call_count == 3
+        assert mock_sleep.call_count == 2
+
+    def test_raises_after_exhausting_attempts(self) -> None:
+        with (
+            patch(
+                "provision_piv_emulation.socket.create_connection",
+                side_effect=ConnectionRefusedError("Connection refused"),
+            ),
+            patch("provision_piv_emulation.time.sleep"),
+            patch("provision_piv_emulation._run", return_value=_completed(stdout="diagnostic output")) as mock_run,
+            pytest.raises(provision_piv_emulation.ProvisioningError, match="never started listening"),
+        ):
+            provision_piv_emulation._wait_for_vpcd_listener(max_attempts=3)
+        commands = [c.args[0][0] for c in mock_run.call_args_list]
+        assert commands == ["system_profiler", "log"]
+
+    def test_error_includes_diagnostic_output(self) -> None:
+        with (
+            patch(
+                "provision_piv_emulation.socket.create_connection",
+                side_effect=ConnectionRefusedError("Connection refused"),
+            ),
+            patch("provision_piv_emulation.time.sleep"),
+            patch("provision_piv_emulation._run", return_value=_completed(stdout="(null):(null) ifd-vpcd.bundle")),
+            pytest.raises(provision_piv_emulation.ProvisioningError, match=r"\(null\):\(null\)"),
+        ):
+            provision_piv_emulation._wait_for_vpcd_listener(max_attempts=3)
+
+
 class TestWaitForCard:
     def test_returns_immediately_once_card_visible(self) -> None:
         with (
@@ -105,6 +160,7 @@ class TestProvisionOrchestration:
             patch("provision_piv_emulation.shutil.which", return_value="/usr/bin/nix-build"),
             patch("provision_piv_emulation._nix_build", side_effect=lambda attr: tmp_path / attr),
             patch("provision_piv_emulation._install_vpcd_bundle", _record("install_vpcd")),
+            patch("provision_piv_emulation._wait_for_vpcd_listener", _record("wait_for_vpcd_listener")),
             patch(
                 "provision_piv_emulation._start_jcardsim",
                 MagicMock(side_effect=lambda *_a: (calls.append("start_jcardsim"), process)[1]),
@@ -119,6 +175,7 @@ class TestProvisionOrchestration:
 
         assert calls == [
             "install_vpcd",
+            "wait_for_vpcd_listener",
             "start_jcardsim",
             "select_applet",
             "wait_for_card",
