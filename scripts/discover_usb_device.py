@@ -62,9 +62,22 @@ def _find_candidates(ioreg_output: str) -> list[tuple[str, int, int]]:
 def find_usable_device() -> tuple[int, int] | None:
     result = subprocess.run(["ioreg", "-p", "IOUSB", "-l"], capture_output=True, text=True, timeout=30, check=False)  # noqa: S607
     if result.returncode != 0:
+        print(f"ioreg failed (exit {result.returncode}): {result.stderr.strip()}", file=sys.stderr)  # noqa: T201
         return None
 
-    for name, vendor_id, product_id in _find_candidates(result.stdout):
+    # Diagnostic only (stderr, never GITHUB_OUTPUT) -- this runner's own USB
+    # population has no prior precedent, unlike Tart's confirmed-live
+    # baseline (see this module's own docstring), so every candidate this
+    # run actually saw needs to be visible in the CI log even when a device
+    # is "found" -- the first non-excluded candidate is not automatically a
+    # *usable* one (see hack/PROJECT.md's Task 10 HIDDriverKit finding).
+    candidates = _find_candidates(result.stdout)
+    print(f"ioreg found {len(candidates)} USB device candidate(s):", file=sys.stderr)  # noqa: T201
+    for name, vendor_id, product_id in candidates:
+        excluded = " [excluded: smartcard-class name]" if _EXCLUDED_NAME_PATTERNS.search(name) else ""
+        print(f"  - {name!r} vendor={vendor_id} product={product_id}{excluded}", file=sys.stderr)  # noqa: T201
+
+    for name, vendor_id, product_id in candidates:
         if _EXCLUDED_NAME_PATTERNS.search(name):
             continue
         return vendor_id, product_id

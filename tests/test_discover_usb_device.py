@@ -57,29 +57,35 @@ class TestFindCandidates:
 
 
 class TestFindUsableDevice:
-    def test_returns_first_non_smartcard_device(self) -> None:
+    def test_returns_first_non_smartcard_device(self, capsys) -> None:
         with patch(
             "discover_usb_device.subprocess.run",
             return_value=type("Result", (), {"returncode": 0, "stdout": _REAL_TART_IOREG_EXCERPT, "stderr": ""})(),
         ):
             result = discover_usb_device.find_usable_device()
         assert result == (1452, 33030)  # Digitizer appears first in the fixture
+        # Diagnostic candidate list goes to stderr, never stdout (which feeds GITHUB_OUTPUT).
+        err = capsys.readouterr().err
+        assert "Virtual USB Digitizer" in err
+        assert "Virtual USB Keyboard" in err
 
-    def test_excludes_smartcard_class_devices(self) -> None:
+    def test_excludes_smartcard_class_devices(self, capsys) -> None:
         with patch(
             "discover_usb_device.subprocess.run",
             return_value=type("Result", (), {"returncode": 0, "stdout": _IOREG_WITH_SMARTCARD_READER, "stderr": ""})(),
         ):
             result = discover_usb_device.find_usable_device()
         assert result is None
+        assert "[excluded" in capsys.readouterr().err
 
-    def test_returns_none_when_ioreg_fails(self) -> None:
+    def test_returns_none_when_ioreg_fails(self, capsys) -> None:
         with patch(
             "discover_usb_device.subprocess.run",
             return_value=type("Result", (), {"returncode": 1, "stdout": "", "stderr": "denied"})(),
         ):
             result = discover_usb_device.find_usable_device()
         assert result is None
+        assert "denied" in capsys.readouterr().err
 
 
 class TestMain:
