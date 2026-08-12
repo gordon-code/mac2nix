@@ -3,15 +3,33 @@
 vpcd registers as a macOS smartcard reader driver by spoofing an arbitrary,
 unrelated USB device's vendor/product ID in its Info.plist (see
 nix/piv-emulation/vpcd.nix's own docstring for the full mechanism). A Tart
-VM guest always has one (confirmed live this session: a synthetic
-"Virtual USB Keyboard"), but a real GitHub Actions runner's baseline USB
-population has never been checked by anyone -- this script is that check,
-run as its own CI step before attempting PIV emulation on a native runner.
+VM guest always has a candidate device (confirmed live this session: a
+synthetic "Virtual USB Keyboard"/"Virtual USB Digitizer" pair), and a real
+GitHub Actions macos-latest runner turned out to expose the identical pair
+(same VID/PID) -- but neither is actually *usable* for this trick (see the
+HID-exclusion note below). This script is the CI step that checks a given
+runner's own USB population and applies that real-world knowledge before
+attempting PIV emulation on a native runner.
 
 Excludes any device that already self-identifies as smart-card-class
 hardware, since reusing a real CCID reader's own VID/PID is a confirmed
 real-world failure mode (frankmorgner/vsmartcard#303) rather than a
 theoretical one.
+
+Also excludes HID input-class devices (keyboard/mouse/trackpad/digitizer),
+confirmed unusable, not merely risky: real diagnostic evidence from both a
+live Tart guest and a real GitHub Actions macos-latest runner shows
+HIDDriverKit already claims these devices' interfaces before CryptoTokenKit/
+CCID's ifd-vpcd driver can obtain a live reader instance for them -- vpcd's
+own bundle registers fine (visible in system_profiler's "Reader Drivers"
+list) but "Readers:" stays permanently empty regardless of which HID
+device's VID/PID it spoofs (see hack/PROJECT.md's Task 10 entries). Both of
+this runner class's only two candidate devices ("Virtual USB Keyboard",
+"Virtual USB Digitizer" -- identical VID/PID to Tart's own baseline, which
+is why a real GitHub Actions runner is itself a Virtualization.framework
+guest) were tried across separate real CI runs and both hit this exact
+failure. Excluding them up front means discovery correctly reports "no
+usable device" instead of picking one that is provably doomed to fail.
 
 Prints `vendor_id=<int>` and `product_id=<int>` (decimal) to stdout for the
 first suitable device found, one per line, and exits 0. Exits 1 with no
@@ -30,6 +48,11 @@ import sys
 # reusing its VID/PID is the confirmed vsmartcard#303 failure mode, not a
 # theoretical concern.
 _EXCLUDED_NAME_PATTERNS = re.compile(r"smart\s*card|ccid|piv|yubikey", re.IGNORECASE)
+
+# Names that indicate a HID input-class device -- confirmed unusable this
+# session (see this module's own docstring), not a theoretical concern
+# either: HIDDriverKit claims these before CryptoTokenKit/CCID can.
+_HID_INPUT_NAME_PATTERNS = re.compile(r"keyboard|mouse|trackpad|touchpad|digitizer|pointing", re.IGNORECASE)
 
 _NAME_FIELD_RE = re.compile(r'"USB Product Name"\s*=\s*"([^"]+)"')
 _VENDOR_FIELD_RE = re.compile(r'"idVendor"\s*=\s*(\d+)')
@@ -74,14 +97,21 @@ def find_usable_device() -> tuple[int, int] | None:
     candidates = _find_candidates(result.stdout)
     print(f"ioreg found {len(candidates)} USB device candidate(s):", file=sys.stderr)  # noqa: T201
     for name, vendor_id, product_id in candidates:
-        excluded = " [excluded: smartcard-class name]" if _EXCLUDED_NAME_PATTERNS.search(name) else ""
-        print(f"  - {name!r} vendor={vendor_id} product={product_id}{excluded}", file=sys.stderr)  # noqa: T201
+        print(f"  - {name!r} vendor={vendor_id} product={product_id}{_exclusion_reason(name)}", file=sys.stderr)  # noqa: T201
 
     for name, vendor_id, product_id in candidates:
-        if _EXCLUDED_NAME_PATTERNS.search(name):
+        if _exclusion_reason(name):
             continue
         return vendor_id, product_id
     return None
+
+
+def _exclusion_reason(name: str) -> str:
+    if _EXCLUDED_NAME_PATTERNS.search(name):
+        return " [excluded: smartcard-class name]"
+    if _HID_INPUT_NAME_PATTERNS.search(name):
+        return " [excluded: HID input-class device, confirmed unusable -- HIDDriverKit claims it first]"
+    return ""
 
 
 def main() -> int:

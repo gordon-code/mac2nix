@@ -45,6 +45,25 @@ _IOREG_WITH_SMARTCARD_READER = """
     }
 """
 
+# Synthetic (not a real capture, unlike the fixture above) -- exists only to
+# prove a genuinely non-HID, non-smartcard candidate still gets picked once
+# HID input-class devices are excluded ahead of it.
+_IOREG_WITH_NON_HID_DEVICE = """
++-o Virtual USB Keyboard@0e900000  <class IOUSBHostDevice, id 0x100000291>
+  |   {
+  |     "idProduct" = 33029
+  |     "USB Product Name" = "Virtual USB Keyboard"
+  |     "idVendor" = 1452
+  |   }
+  |
+  +-o USB-C to Ethernet Adapter@0ea00000  <class IOUSBHostDevice, id 0x10000028b>
+      {
+        "idProduct" = 512
+        "USB Product Name" = "USB-C to Ethernet Adapter"
+        "idVendor" = 1452
+      }
+"""
+
 
 class TestFindCandidates:
     def test_parses_real_tart_ioreg_output(self) -> None:
@@ -57,17 +76,27 @@ class TestFindCandidates:
 
 
 class TestFindUsableDevice:
-    def test_returns_first_non_smartcard_device(self, capsys) -> None:
+    def test_excludes_hid_input_devices(self, capsys) -> None:
+        """Both of Tart's (and, confirmed this session, a real GHA runner's) only candidates are HID input devices."""
         with patch(
             "discover_usb_device.subprocess.run",
             return_value=type("Result", (), {"returncode": 0, "stdout": _REAL_TART_IOREG_EXCERPT, "stderr": ""})(),
         ):
             result = discover_usb_device.find_usable_device()
-        assert result == (1452, 33030)  # Digitizer appears first in the fixture
+        assert result is None
         # Diagnostic candidate list goes to stderr, never stdout (which feeds GITHUB_OUTPUT).
         err = capsys.readouterr().err
         assert "Virtual USB Digitizer" in err
         assert "Virtual USB Keyboard" in err
+        assert err.count("[excluded: HID input-class device") == 2
+
+    def test_returns_first_non_hid_non_smartcard_device(self) -> None:
+        with patch(
+            "discover_usb_device.subprocess.run",
+            return_value=type("Result", (), {"returncode": 0, "stdout": _IOREG_WITH_NON_HID_DEVICE, "stderr": ""})(),
+        ):
+            result = discover_usb_device.find_usable_device()
+        assert result == (1452, 512)  # the Ethernet adapter, not the excluded keyboard
 
     def test_excludes_smartcard_class_devices(self, capsys) -> None:
         with patch(
