@@ -77,13 +77,41 @@ maven.buildMavenPackage {
   # `mvn package` goal too, in non-offline mode -- it hits the exact same
   # ordering problem, so it needs its own `mvn initialize` pass first,
   # against its own local repo path ($out/.m2, not $mvnDeps/.m2).
+  #
+  # `postBuild` here (a real stdenv phase -- mvnFetchExtraArgs passes
+  # anything but `env` straight through as derivation attrs, per
+  # build-maven-package.nix) is required for the FOD to be reproducible at
+  # all. nixpkgs' own installPhase already deletes *.lastUpdated,
+  # resolver-status.properties, and _remote.repositories -- but not
+  # maven-metadata-local.xml, which Maven regenerates (fresh wall-clock
+  # <lastUpdated>) every time it touches a *locally installed* artifact
+  # (api_classic isn't fetched from any repo). Normalizing it in `preBuild`
+  # (right after `mvn initialize`) isn't enough: the real `mvn package` step
+  # that runs after preBuild re-touches the same file while resolving
+  # api_classic as a compile dependency, re-stamping a fresh timestamp --
+  # confirmed empirically by diffing two --check rebuilds under the exact
+  # same pinned nixpkgs, which still mismatched with only the preBuild-time
+  # fix in place. `postBuild` runs after that real build and before
+  # nixpkgs' own installPhase cleanup, so this is the last point that
+  # actually determines mvnHash below.
   mvnFetchExtraArgs = {
     env.JC_CLASSIC_HOME = "${jcClassicHome}";
     preBuild = ''
       mvn initialize -Dmaven.repo.local=$out/.m2
     '';
+    postBuild = ''
+      sed -i.bak -E 's#<lastUpdated>[0-9]+</lastUpdated>#<lastUpdated>00000000000000</lastUpdated>#' \
+        $out/.m2/oracle/javacard/api_classic/maven-metadata-local.xml
+      rm -f $out/.m2/oracle/javacard/api_classic/maven-metadata-local.xml.bak
+    '';
   };
-  mvnHash = "sha256-LqPIhjDVFHjohWZXNd8lOgHK7AgRno6hkgByhuLtxzo="; # verified via a real build this session
+  # Verified against the nixpkgs revision pinned in default.nix, with the
+  # <lastUpdated> normalization above in place -- confirmed reproducible via
+  # a real `nix-store --realise --check` forced rebuild, not just a hash
+  # that happened to match once. Bump this if default.nix's pinned rev ever
+  # changes, since maven.buildMavenPackage's own implementation is part of
+  # nixpkgs and can affect this FOD's exact content.
+  mvnHash = "sha256-7X2nY1rOa6SJo/YFRb0YbqOoYLktMhM9OTfhFx1wGSE=";
 
   # buildMavenPackage has no default installPhase -- the shaded jar
   # (target/jcardsim-3.0.5-SNAPSHOT.jar, already replaced in place by the
