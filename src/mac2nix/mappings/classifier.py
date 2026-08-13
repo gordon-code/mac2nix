@@ -522,6 +522,25 @@ def classify_security_setting(field_name: str, value: Any) -> ClassificationResu
     )
 
 
+def classify_wallpaper(path: Path) -> ClassificationResult:
+    """Classify the scanned desktop wallpaper path as a Tier 3 activation script.
+
+    No native nix-darwin option exists for the desktop picture. Metadata
+    carries only the structured path -- shell escaping is a generator concern.
+
+    Destination is `postActivation`, not `postUserActivation`: nix-darwin
+    removed `{pre,post}UserActivation` -- all activation now runs as root, so
+    a generator targeting this destination must wrap any user-context
+    command (e.g. `osascript` talking to the logged-in user's WindowServer
+    session) in `sudo -u ${config.system.primaryUser}` itself.
+    """
+    return ClassificationResult(
+        tier=ClassificationTier.ACTIVATION_SCRIPT,
+        destination="system.activationScripts.postActivation",
+        metadata={"wallpaper_path": str(path)},
+    )
+
+
 def classify_network_setting(field_name: str, value: Any) -> ClassificationResult:
     """Classify a SystemConfig/NetworkConfig field against NETWORKING_MAP."""
     nix_path = NETWORKING_MAP.get(field_name)

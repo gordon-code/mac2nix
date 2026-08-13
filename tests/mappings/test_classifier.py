@@ -15,6 +15,7 @@ from mac2nix.mappings.classifier import (
     classify_security_setting,
     classify_shell_setting,
     classify_system_setting,
+    classify_wallpaper,
 )
 from mac2nix.mappings.defaults_to_nix import get_nix_option
 from mac2nix.models.application import AppSource, BrewFormula, InstalledApp
@@ -499,6 +500,17 @@ class TestClassifySecuritySetting:
     def test_sip_and_gatekeeper_are_always_manual(self) -> None:
         assert classify_security_setting("sip_enabled", True).tier == ClassificationTier.MANUAL_REPORT
         assert classify_security_setting("gatekeeper_enabled", True).tier == ClassificationTier.MANUAL_REPORT
+
+
+class TestClassifyWallpaper:
+    def test_routes_to_activation_script(self) -> None:
+        result = classify_wallpaper(Path("/System/Library/Desktop Pictures/The Cliffs.heic"))
+        assert result.tier == ClassificationTier.ACTIVATION_SCRIPT
+        assert result.destination == "system.activationScripts.postActivation"
+
+    def test_metadata_carries_only_structured_path_no_shell_command(self) -> None:
+        result = classify_wallpaper(Path("/System/Library/Desktop Pictures/The Cliffs.heic"))
+        assert result.metadata == {"wallpaper_path": "/System/Library/Desktop Pictures/The Cliffs.heic"}
 
 
 class TestClassifyNetworkSetting:

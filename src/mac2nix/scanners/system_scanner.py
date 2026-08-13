@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,24 @@ from mac2nix.scanners.base import BaseScannerPlugin, register
 logger = logging.getLogger(__name__)
 
 _LOCALTIME_PATH = Path("/etc/localtime")
+
+# Verified against a real macOS Tahoe (26.x) desktoppicture.db: the schema
+# matches the commonly-documented data(value)/preferences(key, data_id,
+# picture_id) shape, but preferences.key is NOT uniformly a picture-path
+# pointer -- only key=1 rows ever point to an absolute filesystem path on
+# this machine (other keys observed: 9, 10, 12, 15, 16, 20, none of which
+# are paths -- likely per-space/display shuffle-history bookkeeping). Both
+# conditions (key=1 AND an absolute-path-shaped value) are required to avoid
+# picking one of those non-path rows. ORDER BY preferences.ROWID DESC takes
+# the most-recently-written matching entry as "the current" wallpaper --
+# a deliberate simplification given SystemConfig.wallpaper_path is a single
+# field, not a per-space/per-display map.
+_WALLPAPER_QUERY = (
+    "SELECT data.value FROM preferences "
+    "JOIN data ON data.ROWID = preferences.data_id "
+    "WHERE preferences.key = 1 AND data.value LIKE '/%' "
+    "ORDER BY preferences.ROWID DESC LIMIT 1"
+)
 
 
 @register("system")
@@ -58,6 +77,7 @@ class SystemScanner(BaseScannerPlugin):
         system_extensions = self._detect_system_extensions()
         icloud = self._detect_icloud()
         mdm_enrolled = self._detect_mdm()
+        wallpaper_path = self._get_wallpaper_path()
 
         return SystemConfig(
             hostname=hostname,
@@ -90,6 +110,7 @@ class SystemScanner(BaseScannerPlugin):
             system_extensions=system_extensions,
             icloud=icloud,
             mdm_enrolled=mdm_enrolled,
+            wallpaper_path=wallpaper_path,
         )
 
     def _get_computer_name(self) -> str | None:
@@ -548,6 +569,33 @@ class SystemScanner(BaseScannerPlugin):
             desktop_sync=desktop_sync,
             documents_sync=documents_sync,
         )
+
+    def _get_wallpaper_path(self) -> Path | None:
+        """Read the current desktop wallpaper path from desktoppicture.db.
+
+        macOS stores the desktop picture in a SQLite database, not a plist --
+        the general preferences scanner structurally cannot see it. Never
+        raises: a missing file, corrupt database, or schema mismatch all
+        resolve to `None`, consistent with every other best-effort scanner
+        capability in this file.
+        """
+        db_path = Path.home() / "Library" / "Application Support" / "Dock" / "desktoppicture.db"
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                row = conn.execute(_WALLPAPER_QUERY).fetchone()
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("Could not read desktop wallpaper from %s: %s", db_path, exc)
+            return None
+
+        if not row or not row[0]:
+            logger.warning(
+                "desktoppicture.db query returned no matching row (expected a "
+                "'preferences' row with key=1 pointing to an absolute-path 'data' "
+                "value) -- wallpaper_path will be unset"
+            )
+            return None
+
+        return Path(row[0])
 
     def _detect_mdm(self) -> bool | None:
         """Check if device is MDM enrolled."""
