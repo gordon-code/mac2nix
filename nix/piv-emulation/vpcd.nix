@@ -1,32 +1,51 @@
 # Builds vpcd (frankmorgner/vsmartcard's `virtualsmartcard` component, GPLv3,
 # confirmed via its COPYING file) -- the virtual PC/SC reader that lets a
 # software-only PIV card emulator (jcardsim.nix + pivapplet.nix) register
-# with macOS's own smartcard stack.
+# as a smartcard reader.
 #
 # Standalone process, invoked independently -- never linked into mac2nix's
 # own Python/Nix code -- so this falls under GPLv3's mere-aggregation
 # allowance. Do not vendor its compiled output into anything this project
 # ships to end users.
 #
-# Configured to match the real, official `make osx` build target's own
-# recipe (virtualsmartcard/MacOSX/Makefile.am): --enable-infoplist plus
-# pointing --enable-serialdropdir/--enable-serialconfdir directly at a
-# bundle-shaped path under $out, which assembles a real
-# ifd-vpcd.bundle/Contents/{MacOS,Info.plist} layout purely through those
-# install-path choices -- there is no separate "bundle template" mechanism.
+# Still built with --enable-infoplist -- but no longer for macOS's own
+# *proprietary* CryptoTokenKit/ifdreader PCSC service, which requires
+# spoofing a real (or synthetic) USB device's VID/PID in the bundle's
+# Info.plist so the daemon's IOKit-based hotplug matching fires. That route
+# is a confirmed dead end on Tart specifically: Tart's only two synthetic
+# USB devices (keyboard, digitizer) are already claimed by macOS's own
+# HIDDriverKit stack, so ifdreader registers the driver bundle but never
+# gets a live reader instance for it (real diagnostic evidence:
+# system_profiler SPSmartCardsDataType shows the driver registered,
+# `Readers:` stays empty).
+#
+# --enable-infoplist is kept purely because pcsclite's own macOS dynamic
+# loader (dyn_macosx.c) calls CFBundleCreate() on whatever LIBPATH a
+# reader.conf entry gives it, which requires an actual .bundle directory
+# (Info.plist + MacOS/<executable>) -- a bare .dylib fails to load
+# ("RFLoadReader failed: 0x80100014", confirmed empirically). The bundle's
+# ifdVendorID/ifdProductID fields go unused and are never patched: instead,
+# scripts/provision_piv_emulation.py hand-writes a `/etc/reader.conf.d/vpcd`
+# entry whose LIBPATH points directly at this built bundle -- vsmartcard's
+# own upstream install_readerconf target (Makefile.am, selected when
+# --enable-infoplist is *not* passed) documents exactly this reader.conf
+# mechanism, just installing a bare .so instead of a bundle, which is why
+# it can't be used as-is here. PCSC-lite treats reader.conf.d entries as
+# "serial" (non-hotplug) readers that are always available, independent of
+# any real or virtual USB device -- there is no VID/PID to spoof and
+# nothing for a HID driver to compete for.
+#
+# Registers against a *self-hosted* nixpkgs pcscd (nix/piv-emulation/
+# pcsc-stack.nix), never Apple's proprietary daemon -- verified end-to-end
+# on real hardware this session: pcscd loads this exact bundle via
+# reader.conf, jcardsim/PivApplet present a real ATR through it, and
+# PKCS#11 login+sign+verify all succeed.
+#
 # Uses nixpkgs' own pcsclite for the ifdhandler.h/wintypes.h/reader.h headers
 # (pkg-config discoverable, per configure.ac's default libpcsclite=no path)
 # rather than Apple's proprietary PCSC.framework via an ambient `xcode-select`
-# lookup -- keeps the build hermetic, and is proven ABI-compatible with
-# macOS's real SmartCardServices daemon: Apple's own shipped CCID driver
-# (ifd-ccid.bundle) is itself built against this exact same portable
-# PC/SC IFD-handler API.
-#
-# The resulting bundle's ifdVendorID/ifdProductID must be patched by the
-# provisioning script (scripts/provision_piv_emulation.py) with a
-# caller-supplied VID/PID *after* this builds, not baked in here -- the VM
-# and native-runner execution contexts use different, discovered-not-assumed
-# target devices.
+# lookup -- keeps the build hermetic, and is the same IFD-handler API the
+# self-hosted pcsc-stack.nix pcscd actually loads it with at runtime.
 {
   fetchFromGitHub,
   stdenv,

@@ -19,30 +19,65 @@ def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedPro
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
 
 
-class TestInstallVpcdBundle:
-    def test_patches_info_plist_with_hex_vendor_and_product_id(self, tmp_path: Path) -> None:
-        with (
-            patch("provision_piv_emulation._DRIVER_DEST", tmp_path / "ifd-vpcd.bundle"),
-            patch("provision_piv_emulation._run", return_value=_completed()) as mock_run,
-        ):
-            provision_piv_emulation._install_vpcd_bundle(tmp_path / "store-path", vendor_id=1452, product_id=33029)
+class TestWriteReaderConf:
+    def test_writes_libpath_pointing_at_the_bundle(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        vpcd_bundle = tmp_path / "store-path" / "ifd-vpcd.bundle"
+        with patch("provision_piv_emulation._run", return_value=_completed()) as mock_run:
+            provision_piv_emulation._write_reader_conf(vpcd_bundle)
+
+        written_conf = (tmp_path / "vpcd.reader.conf").read_text()
+        assert f"LIBPATH      {vpcd_bundle}" in written_conf
+        assert "FRIENDLYNAME" in written_conf
+        # No VID/PID anywhere -- the whole point of registering via
+        # reader.conf instead of macOS's Info.plist/USB-hotplug mechanism.
+        assert "VendorID" not in written_conf
+        assert "ProductID" not in written_conf
 
         calls = [c.args[0] for c in mock_run.call_args_list]
-        plutil_calls = [c for c in calls if "plutil" in c]
-        assert any('["0x05ac"]' in " ".join(c) for c in plutil_calls), plutil_calls
-        assert any('["0x8105"]' in " ".join(c) for c in plutil_calls), plutil_calls
+        assert calls[0][:3] == ["sudo", "mkdir", "-p"]
+        assert calls[1][:2] == ["sudo", "cp"]
 
-    def test_removes_existing_bundle_before_copying(self, tmp_path: Path) -> None:
-        existing = tmp_path / "ifd-vpcd.bundle"
-        existing.mkdir()
+    def test_writes_to_real_reader_conf_d_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        with patch("provision_piv_emulation._run", return_value=_completed()) as mock_run:
+            provision_piv_emulation._write_reader_conf(tmp_path / "ifd-vpcd.bundle")
+
+        calls = [c.args[0] for c in mock_run.call_args_list]
+        assert str(provision_piv_emulation._READER_CONF_PATH) in calls[1]
+
+
+class TestStartPcscd:
+    def test_raises_if_process_exits_immediately(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        dead_process = MagicMock()
+        dead_process.poll.return_value = 1
         with (
-            patch("provision_piv_emulation._DRIVER_DEST", existing),
-            patch("provision_piv_emulation._run", return_value=_completed()) as mock_run,
+            patch("provision_piv_emulation._run", return_value=_completed()),
+            patch("provision_piv_emulation.subprocess.Popen", return_value=dead_process),
+            patch("provision_piv_emulation.time.sleep"),
+            pytest.raises(provision_piv_emulation.ProvisioningError, match="exited immediately"),
         ):
-            provision_piv_emulation._install_vpcd_bundle(tmp_path / "store-path", vendor_id=1, product_id=2)
+            provision_piv_emulation._start_pcscd(tmp_path / "bin" / "pcscd")
 
-        first_call = mock_run.call_args_list[0].args[0]
-        assert first_call[:3] == ["sudo", "rm", "-rf"]
+    def test_returns_process_when_still_running(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        live_process = MagicMock()
+        live_process.poll.return_value = None
+        with (
+            patch("provision_piv_emulation._run", return_value=_completed()) as mock_run,
+            patch("provision_piv_emulation.subprocess.Popen", return_value=live_process) as mock_popen,
+            patch("provision_piv_emulation.time.sleep"),
+        ):
+            result = provision_piv_emulation._start_pcscd(tmp_path / "bin" / "pcscd")
+
+        assert result is live_process
+        # Runs detached (survives past this script's own exit) -- the
+        # pamtester step that needs it runs afterward, in a separate SSH
+        # call.
+        assert mock_popen.call_args.kwargs["start_new_session"] is True
+        mkdir_calls = [c.args[0] for c in mock_run.call_args_list if c.args[0][:2] == ["sudo", "mkdir"]]
+        assert any(str(provision_piv_emulation._PCSCD_IPC_DIR) in call for call in mkdir_calls)
 
 
 class TestStartJcardsim:
@@ -55,18 +90,26 @@ class TestStartJcardsim:
             patch("provision_piv_emulation.time.sleep"),
             pytest.raises(provision_piv_emulation.ProvisioningError, match="exited immediately"),
         ):
-            provision_piv_emulation._start_jcardsim(tmp_path / "jcardsim.jar", tmp_path / "pivapplet-classes")
+            provision_piv_emulation._start_jcardsim(
+                tmp_path / "jdk", tmp_path / "jcardsim.jar", tmp_path / "pivapplet-classes"
+            )
 
     def test_returns_process_when_still_running(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)  # _start_jcardsim writes jcardsim-mac2nix.cfg to the CWD
         live_process = MagicMock()
         live_process.poll.return_value = None
         with (
-            patch("provision_piv_emulation.subprocess.Popen", return_value=live_process),
+            patch("provision_piv_emulation.subprocess.Popen", return_value=live_process) as mock_popen,
             patch("provision_piv_emulation.time.sleep"),
         ):
-            result = provision_piv_emulation._start_jcardsim(tmp_path / "jcardsim.jar", tmp_path / "pivapplet-classes")
+            result = provision_piv_emulation._start_jcardsim(
+                tmp_path / "jdk", tmp_path / "jcardsim.jar", tmp_path / "pivapplet-classes"
+            )
         assert result is live_process
+        # Runs detached (survives past this script's own exit) -- the
+        # pamtester step that needs it runs afterward, in a separate SSH
+        # call.
+        assert mock_popen.call_args.kwargs["start_new_session"] is True
 
 
 class TestWaitForVpcdListener:
@@ -97,56 +140,101 @@ class TestWaitForVpcdListener:
         assert call_count == 3
         assert mock_sleep.call_count == 2
 
-    def test_raises_after_exhausting_attempts(self) -> None:
+    def test_raises_after_exhausting_attempts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         with (
             patch(
                 "provision_piv_emulation.socket.create_connection",
                 side_effect=ConnectionRefusedError("Connection refused"),
             ),
             patch("provision_piv_emulation.time.sleep"),
-            patch("provision_piv_emulation._run", return_value=_completed(stdout="diagnostic output")) as mock_run,
+            patch("provision_piv_emulation._run", return_value=_completed(stdout="reader.conf contents")) as mock_run,
             pytest.raises(provision_piv_emulation.ProvisioningError, match="never started listening"),
         ):
             provision_piv_emulation._wait_for_vpcd_listener(max_attempts=3)
-        commands = [c.args[0][0] for c in mock_run.call_args_list]
-        assert commands == ["system_profiler", "log"]
+        commands = [c.args[0] for c in mock_run.call_args_list]
+        assert commands == [["sudo", "cat", str(provision_piv_emulation._READER_CONF_PATH)]]
 
-    def test_error_includes_diagnostic_output(self) -> None:
+    def test_error_includes_pcscd_log_when_present(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pcscd.log").write_text("RFLoadReader failed: 0x80100014")
         with (
             patch(
                 "provision_piv_emulation.socket.create_connection",
                 side_effect=ConnectionRefusedError("Connection refused"),
             ),
             patch("provision_piv_emulation.time.sleep"),
-            patch("provision_piv_emulation._run", return_value=_completed(stdout="(null):(null) ifd-vpcd.bundle")),
-            pytest.raises(provision_piv_emulation.ProvisioningError, match=r"\(null\):\(null\)"),
+            patch("provision_piv_emulation._run", return_value=_completed()),
+            pytest.raises(provision_piv_emulation.ProvisioningError, match="RFLoadReader failed"),
         ):
             provision_piv_emulation._wait_for_vpcd_listener(max_attempts=3)
 
 
+class TestSelectApplet:
+    def test_invokes_the_built_opensc_tool_with_full_aid(self, tmp_path: Path) -> None:
+        with patch("provision_piv_emulation._run", return_value=_completed()) as mock_run:
+            provision_piv_emulation._select_applet(tmp_path)
+        called = mock_run.call_args.args[0]
+        assert called[0] == str(tmp_path / "bin" / "opensc-tool")
+        assert provision_piv_emulation._SELECT_APPLET_APDU in called
+
+
 class TestWaitForCard:
-    def test_returns_immediately_once_card_visible(self) -> None:
+    def test_returns_immediately_once_card_visible(self, tmp_path: Path) -> None:
         with (
-            patch("provision_piv_emulation._run", return_value=_completed(stdout="... PIV ...")) as mock_run,
+            patch(
+                "provision_piv_emulation._run",
+                return_value=_completed(stdout="0    Yes             Virtual PCD 00 00"),
+            ) as mock_run,
             patch("provision_piv_emulation.time.sleep") as mock_sleep,
         ):
-            provision_piv_emulation._wait_for_card(max_attempts=5)
+            provision_piv_emulation._wait_for_card(tmp_path, max_attempts=5)
         assert mock_run.call_count == 1
         mock_sleep.assert_not_called()
 
-    def test_raises_after_exhausting_attempts(self) -> None:
+    def test_raises_after_exhausting_attempts(self, tmp_path: Path) -> None:
         with (
-            patch("provision_piv_emulation._run", return_value=_completed(stdout="nothing here")) as mock_run,
+            patch(
+                "provision_piv_emulation._run",
+                return_value=_completed(stdout="0    No              Virtual PCD 00 00"),
+            ) as mock_run,
             patch("provision_piv_emulation.time.sleep"),
             pytest.raises(provision_piv_emulation.ProvisioningError, match="did not appear"),
         ):
-            provision_piv_emulation._wait_for_card(max_attempts=3, delay_seconds=0)
+            provision_piv_emulation._wait_for_card(tmp_path, max_attempts=3, delay_seconds=0)
         assert mock_run.call_count == 3
 
 
+class TestProvisionPivSlot:
+    def test_uses_virtual_reader_filter_not_yubikey_default(self, tmp_path: Path) -> None:
+        # yubico-piv-tool's own `-r` default is "Yubikey", which never
+        # matches vpcd's "Virtual PCD ..." reader name -- a real,
+        # previously-latent bug (see _READER_NAME_FILTER's own comment).
+        with patch("provision_piv_emulation._run", return_value=_completed()) as mock_run:
+            provision_piv_emulation._provision_piv_slot(tmp_path)
+
+        for call in mock_run.call_args_list:
+            cmd = call.args[0]
+            assert cmd[0] == str(tmp_path / "bin" / "yubico-piv-tool")
+            assert "-r" in cmd
+            assert cmd[cmd.index("-r") + 1] == "Virtual"
+
+    def test_runs_generate_then_selfsign_then_import(self, tmp_path: Path) -> None:
+        with patch("provision_piv_emulation._run", return_value=_completed()) as mock_run:
+            provision_piv_emulation._provision_piv_slot(tmp_path)
+
+        actions = [call.args[0][call.args[0].index("-a") + 1] for call in mock_run.call_args_list]
+        assert actions == ["generate", "verify-pin", "import-certificate"]
+
+
 class TestProvisionOrchestration:
-    def test_runs_stages_in_order_and_cleans_up_jcardsim(self, tmp_path: Path) -> None:
-        process = MagicMock()
+    def test_runs_stages_in_order_without_terminating_anything(self, tmp_path: Path) -> None:
+        # pcscd and jcardsim must both survive past provision()'s own
+        # return -- the pamtester authentication step that needs them runs
+        # afterward, in a separate SSH call. This is real behavior this
+        # test protects: the original script used to call
+        # jcardsim_process.terminate() in a finally block, which would have
+        # broken that later step the moment it was ever reached.
         calls: list[str] = []
 
         def _record(name: str) -> MagicMock:
@@ -159,22 +247,21 @@ class TestProvisionOrchestration:
         with (
             patch("provision_piv_emulation.shutil.which", return_value="/usr/bin/nix-build"),
             patch("provision_piv_emulation._nix_build", side_effect=lambda attr: tmp_path / attr),
-            patch("provision_piv_emulation._install_vpcd_bundle", _record("install_vpcd")),
+            patch("provision_piv_emulation._write_reader_conf", _record("write_reader_conf")),
+            patch("provision_piv_emulation._start_pcscd", _record("start_pcscd")),
             patch("provision_piv_emulation._wait_for_vpcd_listener", _record("wait_for_vpcd_listener")),
-            patch(
-                "provision_piv_emulation._start_jcardsim",
-                MagicMock(side_effect=lambda *_a: (calls.append("start_jcardsim"), process)[1]),
-            ),
+            patch("provision_piv_emulation._start_jcardsim", _record("start_jcardsim")),
             patch("provision_piv_emulation._select_applet", _record("select_applet")),
             patch("provision_piv_emulation._wait_for_card", _record("wait_for_card")),
             patch("provision_piv_emulation._provision_piv_slot", _record("provision_piv_slot")),
             patch("provision_piv_emulation._export_certificate", _record("export_certificate")),
             patch("pathlib.Path.glob", return_value=[tmp_path / "jcardsim.jar"]),
         ):
-            provision_piv_emulation.provision(vendor_id=1452, product_id=33029)
+            provision_piv_emulation.provision()
 
         assert calls == [
-            "install_vpcd",
+            "write_reader_conf",
+            "start_pcscd",
             "wait_for_vpcd_listener",
             "start_jcardsim",
             "select_applet",
@@ -182,20 +269,19 @@ class TestProvisionOrchestration:
             "provision_piv_slot",
             "export_certificate",
         ]
-        process.terminate.assert_called_once()
 
     def test_raises_if_nix_build_not_on_path(self) -> None:
         with (
             patch("provision_piv_emulation.shutil.which", return_value=None),
             pytest.raises(provision_piv_emulation.ProvisioningError, match="nix-build is not on PATH"),
         ):
-            provision_piv_emulation.provision(vendor_id=1, product_id=2)
+            provision_piv_emulation.provision()
 
 
 class TestMain:
     def test_returns_1_and_logs_on_provisioning_error(self) -> None:
         with (
-            patch("sys.argv", ["provision_piv_emulation.py", "--vendor-id", "1452", "--product-id", "33029"]),
+            patch("sys.argv", ["provision_piv_emulation.py"]),
             patch(
                 "provision_piv_emulation.provision",
                 side_effect=provision_piv_emulation.ProvisioningError("boom"),
@@ -207,7 +293,7 @@ class TestMain:
 
     def test_returns_0_on_success(self) -> None:
         with (
-            patch("sys.argv", ["provision_piv_emulation.py", "--vendor-id", "1452", "--product-id", "33029"]),
+            patch("sys.argv", ["provision_piv_emulation.py"]),
             patch("provision_piv_emulation.provision"),
         ):
             assert provision_piv_emulation.main() == 0

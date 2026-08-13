@@ -1,38 +1,56 @@
-"""Register a virtual PIV card with macOS's smartcard stack, for real E2E sudo/PAM testing.
+"""Register a virtual PIV card with a self-hosted PC/SC stack, for real E2E sudo/PAM testing.
 
 Runs *locally* on whatever machine needs the virtual card (a Tart VM guest,
 or a native CI runner) -- it is not a remote-orchestration script like
 scripts/prewarm_vm.py, so it uses plain synchronous subprocess calls.
 
+Never touches macOS's own proprietary CryptoTokenKit/ifdreader PCSC service.
+That daemon only accepts drivers that present as USB CCID devices (spoofing
+a real or synthetic device's VID/PID in the driver bundle's Info.plist), and
+on Tart specifically this is a confirmed dead end: Tart's only two synthetic
+USB devices (keyboard, digitizer) are already claimed by macOS's own
+HIDDriverKit stack, so ifdreader registers the driver bundle but never gets
+a live reader instance for it. Instead this runs a *self-hosted* pcscd
+(nix/piv-emulation/pcsc-stack.nix) that honors vpcd's own documented
+reader.conf.d registration -- a static, non-hotplug reader entry with no
+VID/PID and no USB device involved at all (see vpcd.nix and pcsc-stack.nix's
+own comments for the full rationale). Verified end-to-end on real hardware:
+pcscd sees the reader, jcardsim/PivApplet present a real ATR through it, and
+PKCS#11 login+sign+verify all succeed.
+
 Orchestrates, in order (see hack/plans/fix-vm-tahoe-base-image-1785337468-migration-mvp.md's
 Task 10 Step 3 for the full research trail behind each choice):
 
-1. Build vpcd/jcardsim/pivapplet via the local Nix derivations in
-   nix/piv-emulation/ (never vendored binaries -- see PROJECT.md).
-2. Start jcardsim's VSmartCard remote interface with a PivApplet-configured
-   jcardsim.cfg.
-3. Select the applet via its AID.
-4. Copy vpcd's built ifd-vpcd.bundle to the real system driver directory and
-   patch its Info.plist with the caller-supplied vendor/product ID -- the
-   Nix store copy is read-only, so patching happens on a real filesystem
-   copy, never in the store. Restart the driver host (not a full reboot).
-5. Poll `system_profiler SPSmartCardsDataType` until the emulated card
-   appears (bounded retry -- this is a hard failure if it never appears,
-   not a soft skip; see Task 10 Step 4's own no-skip contract).
-6. Provision the card's PIV slot 9a via yubico-piv-tool (a fresh card has
+1. Build vpcd/pcsclite/opensc/yubicoPivTool/jcardsim/pivapplet via the local
+   Nix derivations in nix/piv-emulation/ (never vendored binaries -- see
+   PROJECT.md).
+2. Register vpcd as a static PC/SC reader via /etc/reader.conf.d/vpcd.
+3. Start our own pcscd as a detached background daemon.
+4. Start jcardsim's VSmartCard remote interface with a PivApplet-configured
+   jcardsim.cfg, also detached -- both it and pcscd stay running after this
+   script exits, since the PAM authentication step that needs them runs
+   afterward, in a separate SSH call.
+5. Select the applet via its full AID (yubico-piv-tool's own SELECT only
+   sends the 5-byte PIV RID, which jcardsim/PivApplet reject as an unknown
+   applet unless the full AID has already been selected once).
+6. Poll our own opensc-tool until the emulated card appears (bounded retry
+   -- this is a hard failure if it never appears, not a soft skip; see Task
+   10 Step 4's own no-skip contract).
+7. Provision the card's PIV slot 9a via yubico-piv-tool (a fresh card has
    no usable keys -- arekinath/PivApplet#23's most-cited bug report was
    exactly this being mistaken for a broken emulator).
-7. Export the freshly-generated certificate into
+8. Export the freshly-generated certificate into
    ~/.eid/authorized_certificates -- the automated equivalent of
    docs/runbooks/yubikey-piv.md's own manual cert-export step.
 
-Usage: ``uv run python scripts/provision_piv_emulation.py --vendor-id 1452 --product-id 33029``
+Usage: ``uv run python scripts/provision_piv_emulation.py``
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import re
 import shutil
 import socket
 import subprocess
@@ -45,7 +63,16 @@ logger = logging.getLogger(__name__)
 _PIV_AID = "A000000308000010000100"
 _SELECT_APPLET_APDU = "80 b8 00 00 12 0b a0 00 00 03 08 00 00 10 00 01 00 05 00 00 02 0F 0F 7f"
 _DEFAULT_PIN = "123456"
-_DRIVER_DEST = Path("/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle")
+
+# yubico-piv-tool's own `-r` default is "Yubikey" -- it would never match
+# vpcd's "Virtual PCD ..." reader name. Confirmed real bug: this was never
+# caught before because provisioning always failed earlier (at the old
+# VID/PID registration step) before yubico-piv-tool ever ran against an
+# emulated card.
+_READER_NAME_FILTER = "Virtual"
+
+_READER_CONF_PATH = Path("/etc/reader.conf.d/vpcd")
+_PCSCD_IPC_DIR = Path("/run/pcscd")
 _JCARDSIM_HOST = "127.0.0.1"
 _JCARDSIM_VPCD_PORT = 35963
 
@@ -76,59 +103,66 @@ def _nix_build(attr: str) -> Path:
     return Path(result.stdout.strip())
 
 
-def _install_vpcd_bundle(vpcd_store_path: Path, vendor_id: int, product_id: int) -> None:
-    if _DRIVER_DEST.exists():
-        _run(["sudo", "rm", "-rf", str(_DRIVER_DEST)])
-    _run(["sudo", "mkdir", "-p", str(_DRIVER_DEST.parent)])
-    _run(["sudo", "cp", "-R", str(vpcd_store_path / "ifd-vpcd.bundle"), str(_DRIVER_DEST.parent)])
+def _write_reader_conf(vpcd_bundle: Path) -> None:
+    """Register vpcd as an always-available, non-hotplug PC/SC reader.
 
-    info_plist = _DRIVER_DEST / "Contents" / "Info.plist"
-    # Info.plist stores these as single-element arrays of hex strings
-    # (verified against a real build this session -- ["0x18d1"] style, not
-    # a bare string) -- plutil's -json replace matches that shape exactly.
-    _run(
-        [
-            "sudo",
-            "plutil",
-            "-replace",
-            "ifdVendorID",
-            "-json",
-            f'["0x{vendor_id:04x}"]',
-            str(info_plist),
-        ]
+    No VID/PID and no USB device involved -- pcsclite treats reader.conf.d
+    entries as static "serial" readers (see vpcd.nix's own comment for the
+    full rationale). This is the whole reason macOS's proprietary
+    CryptoTokenKit/ifdreader VID/PID-spoofing mechanism -- and its
+    Tart-specific HID-claim dead end -- never comes into play at all.
+    """
+    reader_conf = (
+        f'FRIENDLYNAME "Virtual PCD"\nDEVICENAME   /dev/null:0x8C7B\nLIBPATH      {vpcd_bundle}\nCHANNELID    0x8C7B\n'
     )
-    _run(
-        [
-            "sudo",
-            "plutil",
-            "-replace",
-            "ifdProductID",
-            "-json",
-            f'["0x{product_id:04x}"]',
-            str(info_plist),
-        ]
-    )
+    tmp_conf = Path("vpcd.reader.conf")
+    tmp_conf.write_text(reader_conf)
+    _run(["sudo", "mkdir", "-p", str(_READER_CONF_PATH.parent)])
+    _run(["sudo", "cp", str(tmp_conf), str(_READER_CONF_PATH)])
 
-    # Not a full reboot -- vsmartcard's own docs and a 2025 real-world
-    # resolution (frankmorgner/vsmartcard#303) confirm a driver-daemon
-    # restart is sufficient.
-    _run(["sudo", "killall", "-SIGKILL", "-m", ".*com.apple.ifdreader"], check=False)
+
+def _start_pcscd(pcscd_bin: Path) -> subprocess.Popen[str]:
+    """Start our own pcscd as a detached background daemon.
+
+    Never Apple's proprietary daemon -- this pcscd (nixpkgs' own build)
+    honors reader.conf.d's static reader registration, which is what lets
+    vpcd register without a real or virtual USB device at all. `-f` keeps
+    logs on stdout (captured to pcscd.log here) instead of syslog, so a
+    failure carries its own diagnostics; `start_new_session=True` detaches
+    it from this SSH session so it survives past this script's own exit --
+    the pamtester authentication step that needs it runs afterward, in a
+    separate SSH call.
+    """
+    _run(["sudo", "mkdir", "-p", str(_PCSCD_IPC_DIR)], check=False)
+    log_path = Path("pcscd.log")
+    with log_path.open("w") as log_file:
+        process = subprocess.Popen(  # noqa: S603
+            ["sudo", str(pcscd_bin), "-f", "-d"],  # noqa: S607
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+    time.sleep(1)
+    if process.poll() is not None:
+        raise ProvisioningError(f"pcscd exited immediately:\n{log_path.read_text()}")
+    return process
 
 
 def _wait_for_vpcd_listener(max_attempts: int = 30, delay_seconds: float = 1.0) -> None:
     """Poll until vpcd's TCP listener accepts a connection.
 
-    Killing ifdreader only *asks* launchd to respawn it -- that process still
-    has to come back up, rediscover the just-replaced bundle, and have the
-    bundle's own vpcd code bind its listening socket before anything can
-    connect. jcardsim's VSmartCard is the *client* side of that socket (it
-    dials out, it never listens -- confirmed via a real local repro: a bare
-    `java ... VSmartCard` run against a not-yet-ready port raised
-    `java.net.ConnectException: Connection refused` immediately, which
-    `_start_jcardsim`'s 2-second poll then misreported as "process exited
-    immediately", i.e. a build problem it never was). Without this wait,
-    starting VSmartCard right after the kill is a real, reproducible race,
-    not flakiness.
+    pcscd loads vpcd's driver synchronously during its own startup (real,
+    observed behavior: "IFDHCreateChannel() Waiting for virtual ICC" appears
+    in pcscd's own log within milliseconds of "daemon ready") -- but this
+    script's own process starting pcscd doesn't guarantee that sequence has
+    finished by the time control returns here. jcardsim's VSmartCard is the
+    TCP *client* side of that socket (it dials out, it never listens --
+    confirmed via a real local repro: a bare `java ... VSmartCard` run
+    against a not-yet-ready port raised `java.net.ConnectException:
+    Connection refused` immediately). Without this wait, starting VSmartCard
+    too early is a real, reproducible race, not flakiness.
     """
     last_error: OSError | None = None
     for attempt in range(max_attempts):
@@ -140,25 +174,17 @@ def _wait_for_vpcd_listener(max_attempts: int = 30, delay_seconds: float = 1.0) 
             logger.debug("vpcd listener not ready yet (attempt %d/%d): %s", attempt + 1, max_attempts, exc)
             time.sleep(delay_seconds)
 
-    # Never gave a real signal to distinguish "driver registration failed"
-    # (frankmorgner/vsmartcard#303's documented `(null):(null)` entry in
-    # system_profiler, or "new device skipped" in the CryptoTokenKit log --
-    # both real, confirmed macOS failure modes for this exact mechanism)
-    # from any other cause. Capturing both here so a real failure carries
-    # its own root cause instead of requiring a separate repro to diagnose.
-    smartcards = _run(["system_profiler", "SPSmartCardsDataType"], check=False)
-    ctk_log = _run(
-        ["log", "show", "--predicate", '(subsystem == "com.apple.CryptoTokenKit")', "--info", "--last", "1m"],
-        check=False,
-    )
+    pcscd_log = Path("pcscd.log")
+    pcscd_log_contents = pcscd_log.read_text() if pcscd_log.exists() else "(no pcscd.log found)"
+    reader_conf = _run(["sudo", "cat", str(_READER_CONF_PATH)], check=False)
     raise ProvisioningError(
         f"vpcd never started listening on {_JCARDSIM_HOST}:{_JCARDSIM_VPCD_PORT}: {last_error}\n"
-        f"system_profiler SPSmartCardsDataType:\n{smartcards.stdout}\n"
-        f"CryptoTokenKit log (last 1m):\n{ctk_log.stdout}"
+        f"{_READER_CONF_PATH}:\n{reader_conf.stdout}\n"
+        f"pcscd log:\n{pcscd_log_contents}"
     )
 
 
-def _start_jcardsim(jcardsim_jar: Path, pivapplet_classes: Path) -> subprocess.Popen[str]:
+def _start_jcardsim(jdk_path: Path, jcardsim_jar: Path, pivapplet_classes: Path) -> subprocess.Popen[str]:
     jcardsim_cfg = Path("jcardsim-mac2nix.cfg")
     jcardsim_cfg.write_text(
         f"com.licel.jcardsim.card.applet.0.AID={_PIV_AID}\n"
@@ -167,48 +193,59 @@ def _start_jcardsim(jcardsim_jar: Path, pivapplet_classes: Path) -> subprocess.P
         f"com.licel.jcardsim.vsmartcard.port={_JCARDSIM_VPCD_PORT}\n"
     )
     classpath = f"{pivapplet_classes}:{jcardsim_jar}"
-    process = subprocess.Popen(  # noqa: S603
-        ["java", "-noverify", "-cp", classpath, "com.licel.jcardsim.remote.VSmartCard", str(jcardsim_cfg)],  # noqa: S607
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    log_path = Path("jcardsim.log")
+    # Captured to a real file (not a pipe) and detached via
+    # start_new_session=True -- this process must survive past this
+    # script's own exit for the same reason pcscd does (see _start_pcscd).
+    # A silent crash here previously required a separate local repro to
+    # diagnose (real incident: jcardsim's VSmartCard is a TCP *client* that
+    # fails fast with a ConnectException if vpcd isn't listening yet, which
+    # a bare poll then misreported as "process exited immediately", i.e. a
+    # build problem it never was).
+    java_bin = str(jdk_path / "bin" / "java")
+    with log_path.open("w") as log_file:
+        process = subprocess.Popen(  # noqa: S603
+            [java_bin, "-noverify", "-cp", classpath, "com.licel.jcardsim.remote.VSmartCard", str(jcardsim_cfg)],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
     time.sleep(2)  # let the remote interface bind before anything tries to select the applet
     if process.poll() is not None:
-        # Captured, not DEVNULL'd -- a silent crash here previously required a
-        # separate local repro to diagnose (real incident: jcardsim's
-        # VSmartCard is a TCP *client* that fails fast with a
-        # ConnectException if vpcd isn't listening yet, which surfaced only
-        # as "exited immediately" with no way to tell that apart from an
-        # actual classpath/build problem).
-        output = process.stdout.read() if process.stdout else ""
-        raise ProvisioningError(f"jcardsim's VSmartCard process exited immediately:\n{output}")
+        raise ProvisioningError(f"jcardsim's VSmartCard process exited immediately:\n{log_path.read_text()}")
     return process
 
 
-def _select_applet(reader_pattern: str = "Virtual PCD 00 00") -> None:
-    _run(["opensc-tool", "-r", reader_pattern, "-s", _SELECT_APPLET_APDU])
+def _select_applet(opensc_path: Path, reader_pattern: str = "Virtual PCD 00 00") -> None:
+    opensc_tool = opensc_path / "bin" / "opensc-tool"
+    _run([str(opensc_tool), "-r", reader_pattern, "-s", _SELECT_APPLET_APDU])
 
 
-def _wait_for_card(max_attempts: int = 10, delay_seconds: int = 3) -> None:
+def _wait_for_card(opensc_path: Path, max_attempts: int = 10, delay_seconds: int = 3) -> None:
+    opensc_tool = opensc_path / "bin" / "opensc-tool"
     for attempt in range(max_attempts):
-        result = _run(["system_profiler", "SPSmartCardsDataType"], check=False)
-        if "Virtual PCD" in result.stdout or "PIV" in result.stdout:
+        result = _run([str(opensc_tool), "--list-readers"], check=False)
+        if re.search(r"Yes\s+Virtual PCD", result.stdout):
             return
         logger.debug("Card not yet visible (attempt %d/%d)", attempt + 1, max_attempts)
         time.sleep(delay_seconds)
-    raise ProvisioningError(f"Emulated PIV card did not appear in system_profiler after {max_attempts} attempts")
+    raise ProvisioningError(f"Emulated PIV card did not appear after {max_attempts} attempts")
 
 
-def _provision_piv_slot() -> None:
+def _provision_piv_slot(yubico_piv_tool_path: Path) -> None:
     # A freshly-started card has no usable keys -- arekinath/PivApplet#23's
     # most-cited bug report was exactly this being mistaken for a broken
     # emulator. Slot 9a, RSA (yubico-piv-tool's default), matching the
     # pre-built PivApplet .cap's own RSA/EC/AES/3DES feature set.
-    _run(["yubico-piv-tool", "-a", "generate", "-s", "9a", "-o", "pubkey.pem"])
+    yubico_piv_tool = str(yubico_piv_tool_path / "bin" / "yubico-piv-tool")
+    _run([yubico_piv_tool, "-r", _READER_NAME_FILTER, "-a", "generate", "-s", "9a", "-o", "pubkey.pem"])
     _run(
         [
-            "yubico-piv-tool",
+            yubico_piv_tool,
+            "-r",
+            _READER_NAME_FILTER,
             "-a",
             "verify-pin",
             "-P",
@@ -225,7 +262,7 @@ def _provision_piv_slot() -> None:
             "cert.pem",
         ]
     )
-    _run(["yubico-piv-tool", "-a", "import-certificate", "-s", "9a", "-i", "cert.pem"])
+    _run([yubico_piv_tool, "-r", _READER_NAME_FILTER, "-a", "import-certificate", "-s", "9a", "-i", "cert.pem"])
 
 
 def _export_certificate() -> None:
@@ -238,16 +275,21 @@ def _export_certificate() -> None:
     authorized.chmod(0o644)
 
 
-def provision(vendor_id: int, product_id: int) -> None:
+def provision() -> None:
     """Run the full provisioning sequence. Raises ProvisioningError on any failure."""
     if shutil.which("nix-build") is None:
-        raise ProvisioningError("nix-build is not on PATH -- required to build vpcd/jcardsim/pivapplet")
+        raise ProvisioningError("nix-build is not on PATH -- required to build the PIV emulation stack")
 
     vpcd_path = _nix_build("vpcd")
+    pcsclite_path = _nix_build("pcsclite")
+    opensc_path = _nix_build("opensc")
+    yubico_piv_tool_path = _nix_build("yubicoPivTool")
+    jdk_path = _nix_build("jdk")
     jcardsim_path = _nix_build("jcardsim")
     pivapplet_path = _nix_build("pivapplet")
 
-    _install_vpcd_bundle(vpcd_path, vendor_id, product_id)
+    _write_reader_conf(vpcd_path / "ifd-vpcd.bundle")
+    _start_pcscd(pcsclite_path / "bin" / "pcscd")
     _wait_for_vpcd_listener()
 
     jcardsim_jar_candidates = list((jcardsim_path / "share").glob("**/jcardsim*.jar")) or list(
@@ -256,25 +298,26 @@ def provision(vendor_id: int, product_id: int) -> None:
     if not jcardsim_jar_candidates:
         raise ProvisioningError(f"No jcardsim jar found under {jcardsim_path}")
 
-    process = _start_jcardsim(jcardsim_jar_candidates[0], pivapplet_path)
-    try:
-        _select_applet()
-        _wait_for_card()
-        _provision_piv_slot()
-        _export_certificate()
-    finally:
-        process.terminate()
+    # pcscd and jcardsim are deliberately left running (not terminated) --
+    # both need to stay alive for the PAM authentication step that runs
+    # afterward, in a separate SSH call. Leaving them running on a
+    # provisioning failure too is also the right call here: it preserves
+    # live diagnostic state instead of tearing it down before anyone can
+    # inspect it.
+    _start_jcardsim(jdk_path, jcardsim_jar_candidates[0], pivapplet_path)
+    _select_applet(opensc_path)
+    _wait_for_card(opensc_path)
+    _provision_piv_slot(yubico_piv_tool_path)
+    _export_certificate()
 
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--vendor-id", type=int, required=True, help="USB vendor ID (decimal) to spoof for vpcd")
-    parser.add_argument("--product-id", type=int, required=True, help="USB product ID (decimal) to spoof for vpcd")
-    args = parser.parse_args()
+    parser.parse_args()
 
     try:
-        provision(args.vendor_id, args.product_id)
+        provision()
     except ProvisioningError as exc:
         logger.error("PIV emulation provisioning failed: %s", exc)
         return 1
