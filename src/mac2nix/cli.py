@@ -414,6 +414,7 @@ def generate() -> None:
 def validate(  # noqa: PLR0913
     flake_path: Path,
     scan_file: Path,
+    *,
     mac2nix_source: str,
     base_vm: str,
     vm_user: str,
@@ -484,6 +485,7 @@ def diff() -> None:
 def discover(  # noqa: PLR0913
     package: str,
     package_type: str,
+    *,
     base_vm: str,
     vm_user: str,
     vm_password: str,
