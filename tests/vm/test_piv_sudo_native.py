@@ -2,14 +2,7 @@
 
 Marked `nix_darwin_switch`, same skip-unless-`GITHUB_ACTIONS=true` guard as
 `test_scaffold_switch_native.py` — never runs against a real developer
-machine. Unlike that test, this one requires two more environment
-variables (`MAC2NIX_PIV_VENDOR_ID`/`MAC2NIX_PIV_PRODUCT_ID`) that only exist
-when `pr-checks.yaml`'s discovery step (`scripts/discover_usb_device.py`)
-found a usable baseline USB device on this specific runner — if it didn't,
-the CI workflow's own conditional skips the step that would run this test
-entirely, which is a deliberate, documented fallback (see
-hack/plans/fix-vm-tahoe-base-image-1785337468-migration-mvp.md's Task 10
-Step 5), not something this test itself needs to handle.
+machine.
 
 Must run *after* `test_scaffold_switch_native.py`'s own switch step in the
 CI workflow, never before or concurrently — see
@@ -18,6 +11,33 @@ security review: this test's own switch (with the PIV option enabled)
 splices a live PAM module into this runner's real `/etc/pam.d/sudo_local`
 for the remainder of the job, and nothing else in that job may still depend
 on plain-password `sudo` succeeding once it does.
+
+`scripts/provision_piv_emulation.py` no longer needs a discovered USB
+device at all (see its own docstring): it registers vpcd via its own
+reader.conf mechanism against a self-hosted pcscd
+(nix/piv-emulation/pcsc-stack.nix), not macOS's proprietary
+CryptoTokenKit/ifdreader daemon, which is what actually needed a
+VID/PID-matched USB device to spoof.
+
+This matters concretely for this leg, not just architecturally: a separate
+session (hack/PROJECT.md's "native-runner leg validated against real GHA
+hardware" entry, 2026-08-12) confirmed via three real CI runs that
+`runs-on: macos-latest` exposes exactly two USB devices, byte-for-byte
+identical to Tart's own baseline, and both are HID-claimed the same way --
+`scripts/discover_usb_device.py` now correctly excludes both as unusable,
+which means this test's own CI step (gated on a device being discovered)
+currently never actually executes on a real runner; it always lands on the
+documented "no usable device, skip" fallback instead. The self-hosted-pcscd
+mechanism needs no discovered device at all, so it removes the reason that
+fallback exists in the first place -- but that has not yet been verified
+against a real `macos-latest` runner (this session's own verification was
+against a real Tart VM only). `MAC2NIX_PIV_VENDOR_ID`/
+`MAC2NIX_PIV_PRODUCT_ID`, `scripts/discover_usb_device.py`, and
+`pr-checks.yaml`'s conditional gating on them are consequently no longer
+load-bearing for this leg, but are left in place un-deleted pending a real
+CI run confirming the new mechanism actually works here too -- a CI
+workflow change is a higher-stakes, harder-to-verify-locally edit than the
+Python it gates, and is deliberately out of scope for this session.
 """
 
 from __future__ import annotations
@@ -90,13 +110,10 @@ def discovered_usb_device() -> tuple[int, int]:
     return int(vendor_id), int(product_id)
 
 
-def test_piv_card_authenticates_against_sudo_pam_natively(
-    real_age_key: Path, discovered_usb_device: tuple[int, int], tmp_path: Path
-) -> None:
+def test_piv_card_authenticates_against_sudo_pam_natively(real_age_key: Path, tmp_path: Path) -> None:
     """A real virtual PIV card, provisioned directly on this runner, authenticates via pam_p11."""
     username = getpass.getuser()
     output_dir = tmp_path / "mac2nix-scaffold"
-    vendor_id, product_id = discovered_usb_device
 
     init_framework(output_dir)
     add_host(output_dir, _HOSTNAME, username, confirm_backup=lambda _fingerprint: True)
@@ -145,10 +162,6 @@ def test_piv_card_authenticates_against_sudo_pam_natively(
             "nixpkgs#python3",
             "--",
             str(provision_script),
-            "--vendor-id",
-            str(vendor_id),
-            "--product-id",
-            str(product_id),
         ],
         capture_output=True,
         text=True,
@@ -159,13 +172,33 @@ def test_piv_card_authenticates_against_sudo_pam_natively(
         f"PIV emulation provisioning failed:\nstdout:\n{provision_result.stdout}\nstderr:\n{provision_result.stderr}"
     )
 
-    pamtester_result = subprocess.run(  # noqa: S603
-        ["bash", "-c", f"echo 123456 | {nix_bin} run nixpkgs#pamtester -- sudo_local {username} authenticate"],  # noqa: S607
+    # Real "sudo" PAM authentication, never a nix-built PAM-testing tool like
+    # pamtester -- see tests/vm/test_piv_sudo_vm.py's own _sudo_authenticate
+    # docstring for the full, VM-confirmed reasoning: nix-built binaries and
+    # nixpkgs' own libpam.2.dylib are rejected outright by AppleMobileFileIntegrity
+    # ("Unrecoverable CT signature issue"), and OpenPAM's own
+    # openpam_check_path_owner_perms() independently refuses to load any module
+    # from /nix/store at all ("insecure ownership or permissions") -- both
+    # confirmed via a direct `log show` capture, regardless of which PAM service
+    # is targeted or how its policy is written. Only a real, Apple-signed
+    # /usr/bin/sudo can drive this PAM chain successfully.
+    #
+    # This runner's own sudo has no NOPASSWD override (unlike Tart's base
+    # image, see _sudo_authenticate's docstring) -- GitHub-hosted macOS
+    # runners require a real password for sudo by default -- so no
+    # NOPASSWD-removal step is needed here.
+    #
+    # -k invalidates any cached sudo timestamp first, so this always exercises
+    # a real PAM authentication rather than a cached credential. -S reads the
+    # password from stdin. -v only validates/refreshes credentials -- no
+    # command execution needed to prove authentication succeeded or failed.
+    sudo_auth_result = subprocess.run(  # noqa: S603
+        ["bash", "-c", f"echo 123456 | {sudo_bin} -k -S -v"],  # noqa: S607
         capture_output=True,
         text=True,
         timeout=60,
         check=False,
     )
-    assert pamtester_result.returncode == 0, (
-        f"pamtester authentication failed:\nstdout:\n{pamtester_result.stdout}\nstderr:\n{pamtester_result.stderr}"
+    assert sudo_auth_result.returncode == 0, (
+        f"sudo authentication failed:\nstdout:\n{sudo_auth_result.stdout}\nstderr:\n{sudo_auth_result.stderr}"
     )
