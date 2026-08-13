@@ -194,9 +194,10 @@ class Validator:
     _DEFAULT_MAC2NIX_SOURCE = "github:gordon-code/mac2nix"
 
     # Directories excluded when SCPing a local mac2nix checkout into the VM —
-    # dev-machine-only content (VCS history, secrets, scan data, project memory)
-    # that has no bearing on the package being scanned from inside the VM.
-    _LOCAL_SOURCE_EXCLUDE = frozenset({".git", ".env", "data", "hack"})
+    # dev-machine-only content (VCS history, secrets, scan data, project memory,
+    # a local dev venv/cache that can be tens to hundreds of MB) that has no
+    # bearing on the package being scanned from inside the VM.
+    _LOCAL_SOURCE_EXCLUDE = frozenset({".git", ".env", "data", "hack", ".cache"})
 
     def __init__(self, vm: TartVMManager, mac2nix_source: str = _DEFAULT_MAC2NIX_SOURCE) -> None:
         self._vm = vm
