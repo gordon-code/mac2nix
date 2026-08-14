@@ -128,6 +128,16 @@ class TestClassifyPreferenceSensitiveKeyRedaction:
         assert result.metadata["potentially_sensitive"] is True
         assert result.metadata["value"] == "***REDACTED***"
 
+    def test_sensitive_key_name_itself_is_redacted_in_destination(self) -> None:
+        """destination is what generators (e.g. preferences.py) surface into real,
+        on-disk output -- the secret can be embedded in the key itself, not just
+        the value, so `destination` must never leak the raw key name either.
+        """
+        domain = _domain("com.example.someapp", {"sk-live-abc123_TOKEN": "unused"})
+        result = classify_preference(domain, "sk-live-abc123_TOKEN", "unused")
+        assert "sk-live-abc123" not in result.destination
+        assert "***REDACTED***" in result.destination
+
     def test_sensitive_match_takes_priority_over_native_mapping(self) -> None:
         """A sensitive-looking key must never leak into Tier 1/2/3 even if otherwise mappable."""
         domain = _domain("com.apple.dock", {"autohide_TOKEN": True})

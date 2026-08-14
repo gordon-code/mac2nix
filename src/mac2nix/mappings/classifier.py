@@ -195,9 +195,14 @@ def _classify_preference_precheck(
 ) -> ClassificationResult | None:
     """SEC-1/SEC-3 gating checks plus ephemeral-noise filtering, run before any tier routing."""
     if _contains_sensitive_pattern(key) or _value_contains_sensitive_pattern(value):
+        # The key name itself is redacted in `destination` (not just `value`)
+        # -- a secret is sometimes embedded in the key rather than the value
+        # (e.g. a literal API key used as a dict key), and `destination` is
+        # what generators surface into real, on-disk output.
         return ClassificationResult(
             tier=ClassificationTier.MANUAL_REPORT,
-            destination=f"manual report: key '{key}' in domain '{domain.domain_name}' matches a sensitive pattern",
+            destination=f"manual report: key '***REDACTED***' in domain '{domain.domain_name}' "
+            "matches a sensitive pattern",
             metadata={
                 "potentially_sensitive": True,
                 "reason": "key or value matches a sensitive pattern",
