@@ -8,6 +8,13 @@ Generate nix-darwin configurations from macOS system scans.
 uv sync
 ```
 
+mac2nix also ships a minimal `flake.nix`, so it can be run via Nix without a
+local `uv` install (used internally to re-scan a VM during `mac2nix validate`):
+
+```sh
+nix run github:gordon-code/mac2nix -- --help
+```
+
 ## Usage
 
 ```sh
