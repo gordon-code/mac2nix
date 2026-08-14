@@ -55,6 +55,7 @@ def _realistic_state() -> SystemState:
             "ac_power.sleep": "0",  # POWER_SETTING_MAP-mapped -> power.sleep.computer ("never")
             "battery_power.displaysleep": "10",  # POWER_SETTING_MAP-mapped -> power.sleep.display (int)
             "ac_power.womp": "1",  # POWER_SETTING_MAP-mapped -> networking.wakeOnLan.enable (bool)
+            "ac_power.autorestart": "0",  # POWER_SETTING_MAP-mapped -> power.restartAfterPowerFailure (bool)
             "ac_power.hibernatemode": "3",  # not in POWER_SETTING_MAP -> MANUAL_REPORT
         },
         wallpaper_path=Path("/System/Library/Desktop Pictures/The Cliffs.heic"),

@@ -388,6 +388,27 @@ def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op
 _ALLOWED_DOMAINS = ("preferences",)
 
 
+def _check_scaffolded_framework(output_dir: Path) -> None:
+    flake_path = output_dir / "flake.nix"
+    try:
+        is_scaffolded = flake_path.is_file() and "# MAC2NIX:HOSTS:BEGIN" in flake_path.read_text()
+    except OSError as exc:
+        raise click.ClickException(f"Failed to read {flake_path}: {exc}") from exc
+    if not is_scaffolded:
+        raise click.ClickException(f"{output_dir} is not a mac2nix-scaffolded framework — run `mac2nix init` first")
+
+
+def _check_host_registered(output_dir: Path, hostname: str) -> None:
+    host_dir = output_dir / "hosts" / "darwin" / hostname
+    try:
+        host_registered = host_dir.exists()
+    except OSError as exc:
+        raise click.ClickException(f"Failed to check {host_dir}: {exc}") from exc
+    if not host_registered:
+        msg = f"host {hostname!r} is not registered under {output_dir} — run `mac2nix add-host` first"
+        raise click.ClickException(msg)
+
+
 @main.command()
 @click.argument("output_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--hostname", required=True, help="Host to populate (must already be registered via add-host).")
@@ -410,9 +431,7 @@ def generate(output_dir: Path, hostname: str, scan_file: Path | None, domains: s
     -- it only writes files and (for an inline scan) runs the existing
     read-only scanners.
     """
-    flake_path = output_dir / "flake.nix"
-    if not flake_path.is_file() or "# MAC2NIX:HOSTS:BEGIN" not in flake_path.read_text():
-        raise click.ClickException(f"{output_dir} is not a mac2nix-scaffolded framework — run `mac2nix init` first")
+    _check_scaffolded_framework(output_dir)
 
     requested_domains = {token.strip() for token in domains.split(",") if token.strip()}
     unknown = requested_domains - set(_ALLOWED_DOMAINS)
@@ -420,9 +439,7 @@ def generate(output_dir: Path, hostname: str, scan_file: Path | None, domains: s
         msg = f"unknown domain(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(_ALLOWED_DOMAINS)}"
         raise click.BadParameter(msg, param_hint="--domains")
 
-    if not (output_dir / "hosts" / "darwin" / hostname).exists():
-        msg = f"host {hostname!r} is not registered under {output_dir} — run `mac2nix add-host` first"
-        raise click.ClickException(msg)
+    _check_host_registered(output_dir, hostname)
 
     if scan_file is not None:
         try:

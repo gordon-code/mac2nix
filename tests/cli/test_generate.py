@@ -106,6 +106,41 @@ class TestGenerateCommand:
         assert result.exit_code != 0
         assert not (output_dir / "hosts" / "darwin" / "myhost" / "preferences.nix").exists()
 
+    def test_unreadable_flake_nix_fails_cleanly_not_a_raw_traceback(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+        flake_path = output_dir / "flake.nix"
+        flake_path.chmod(0o000)
+
+        try:
+            runner = CliRunner()
+            result = runner.invoke(main, ["generate", str(output_dir), "--hostname", "myhost"])
+        finally:
+            flake_path.chmod(0o644)
+
+        assert result.exit_code != 0
+        assert result.exc_info is not None
+        assert result.exc_info[0] is SystemExit
+        assert "Failed to read" in result.output
+
+    def test_unreadable_hosts_dir_fails_cleanly_not_a_raw_traceback(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+        hosts_dir = output_dir / "hosts"
+        hosts_dir.mkdir()
+        hosts_dir.chmod(0o000)
+
+        try:
+            runner = CliRunner()
+            result = runner.invoke(main, ["generate", str(output_dir), "--hostname", "myhost"])
+        finally:
+            hosts_dir.chmod(0o755)
+
+        assert result.exit_code != 0
+        assert result.exc_info is not None
+        assert result.exc_info[0] is SystemExit
+        assert "Failed to check" in result.output
+
     def test_invalid_scan_file_fails_cleanly(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "repo"
         init_framework(output_dir)
