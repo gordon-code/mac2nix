@@ -13,18 +13,25 @@
 <% if wallpaper_path %>
   # nix-darwin removed {pre,post}UserActivation -- all activation now runs
   # as root, so the osascript call (which must talk to the logged-in user's
-  # WindowServer session) is explicitly run as system.primaryUser.
+  # WindowServer session) is explicitly run as system.primaryUser. The path
+  # is passed as an osascript *argument* (argv), never embedded into the
+  # AppleScript source text itself -- a path containing a literal `"` would
+  # otherwise terminate the embedded AppleScript string early and allow
+  # arbitrary command injection via `&`/`do shell script`.
   system.activationScripts.postActivation.text = lib.mkDefault (
     let
       wallpaperPath = << wallpaper_path|nix_str >>;
     in
     ''
-      WALLPAPER_PATH=${lib.escapeShellArg wallpaperPath}
-      sudo -u ${config.system.primaryUser} osascript -e "tell application \"System Events\" to tell every desktop to set picture to POSIX file \"$WALLPAPER_PATH\""
+      sudo -u ${config.system.primaryUser} osascript \
+        -e 'on run argv' \
+        -e '  tell application "System Events" to tell every desktop to set picture to POSIX file (item 1 of argv)' \
+        -e 'end run' \
+        ${lib.escapeShellArg wallpaperPath}
     ''
   );
 <% endif %>
 <% for comment in manual_report_comments %>
-  # not automated: << comment >>
+  # not automated: << comment|nix_comment >>
 <% endfor %>
 }

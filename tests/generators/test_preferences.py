@@ -231,6 +231,43 @@ class TestGeneratePreferences:
         rendered = generate_preferences(state)
         assert "not automated" not in rendered
 
+    def test_newline_in_sensitive_key_cannot_inject_nix_syntax_via_manual_report_comment(self) -> None:
+        """A real, previously-exploitable bug: a plist key is fully attacker-writable
+        (`defaults write <domain> <key> ...` needs no privilege), and a newline in a
+        key routed to MANUAL_REPORT would otherwise break out of the rendered
+        `# not automated: ...` single-line Nix comment.
+        """
+        malicious_key = 'x_TOKEN\n  }; system.activationScripts.pwned.text = "pwned"; { y'
+        domains = [_domain("com.apple.dock", {malicious_key: "irrelevant"})]
+        system = SystemConfig(hostname="h", power_settings={})
+        state = _state(preferences=PreferencesResult(domains=domains), system=system)
+
+        rendered = generate_preferences(state)
+
+        assert "\n  }; system.activationScripts.pwned" not in rendered
+        assert "pwned" not in rendered  # the redacted key never appears in output at all
+        for line in rendered.splitlines():
+            assert line.count("#") <= 1 or line.strip().startswith("#")
+
+    def test_custom_system_preferences_bucket_is_reachable_and_renders(self) -> None:
+        """A system-scoped plist for a curated domain is real, not speculative -- the
+        preferences scanner globs `/Library/Preferences/*.plist` unfiltered, so any
+        curated domain name can legitimately appear there on a real Mac.
+        """
+        domain = PreferencesDomain(
+            domain_name="com.apple.screensaver",
+            source_path=Path("/Library/Preferences/com.apple.screensaver.plist"),
+            keys={"someUnmappedKey": "value"},
+        )
+        system = SystemConfig(hostname="h", power_settings={})
+        state = _state(preferences=PreferencesResult(domains=[domain]), system=system)
+
+        rendered = generate_preferences(state)
+
+        assert "system.defaults.CustomSystemPreferences" in rendered
+        assert "someUnmappedKey" in rendered
+        assert "system.defaults.CustomUserPreferences" not in rendered
+
 
 @pytest.fixture
 def require_nix_instantiate() -> None:
@@ -268,6 +305,49 @@ def test_render_is_valid_nix(require_nix_instantiate: None, tmp_path: Path) -> N
 @pytest.mark.nix
 def test_empty_module_fallback_is_valid_nix(require_nix_instantiate: None, tmp_path: Path) -> None:
     state = _state(preferences=None, system=None)
+    rendered = generate_preferences(state)
+    module_path = tmp_path / "preferences.nix"
+    module_path.write_text(rendered)
+
+    result = subprocess.run(  # noqa: S603
+        ["nix-instantiate", "--parse", str(module_path)],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.nix
+def test_custom_system_preferences_block_is_valid_nix(require_nix_instantiate: None, tmp_path: Path) -> None:
+    domain = PreferencesDomain(
+        domain_name="com.apple.screensaver",
+        source_path=Path("/Library/Preferences/com.apple.screensaver.plist"),
+        keys={"someUnmappedKey": "value"},
+    )
+    system = SystemConfig(hostname="h", power_settings={})
+    state = _state(preferences=PreferencesResult(domains=[domain]), system=system)
+
+    rendered = generate_preferences(state)
+    module_path = tmp_path / "preferences.nix"
+    module_path.write_text(rendered)
+
+    result = subprocess.run(  # noqa: S603
+        ["nix-instantiate", "--parse", str(module_path)],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.nix
+def test_newline_in_key_does_not_break_nix_syntax(require_nix_instantiate: None, tmp_path: Path) -> None:
+    malicious_key = 'x_TOKEN\n  }; system.activationScripts.pwned.text = "pwned"; { y'
+    domains = [_domain("com.apple.dock", {malicious_key: "irrelevant"})]
+    system = SystemConfig(hostname="h", power_settings={})
+    state = _state(preferences=PreferencesResult(domains=domains), system=system)
+
     rendered = generate_preferences(state)
     module_path = tmp_path / "preferences.nix"
     module_path.write_text(rendered)
