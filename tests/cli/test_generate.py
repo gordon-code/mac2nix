@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from click.testing import CliRunner
 
@@ -156,3 +157,51 @@ class TestGenerateCommand:
 
         assert result.exit_code != 0
         assert "Failed to load scan file" in result.output
+
+    def test_path_traversal_hostname_rejected(self, tmp_path: Path) -> None:
+        """`--hostname` must go through the same allowlist add-host uses -- otherwise
+        host_dir = output_dir / "hosts" / "darwin" / hostname escapes output_dir
+        for a value like "../../../../tmp".
+        """
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["generate", str(output_dir), "--hostname", "../../evil"])
+
+        assert result.exit_code != 0
+        assert not (tmp_path / "evil").exists()
+
+    def test_inline_scan_success_when_no_scan_file_given(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+        _register_fake_host(output_dir, "myhost")
+
+        domains = [PreferencesDomain(domain_name="com.apple.dock", keys={"tilesize": 48})]
+        state = SystemState(
+            hostname="h",
+            macos_version="26.0",
+            architecture="arm64",
+            preferences=PreferencesResult(domains=domains),
+            system=SystemConfig(hostname="h"),
+        )
+
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(return_value=state)):
+            runner = CliRunner()
+            result = runner.invoke(main, ["generate", str(output_dir), "--hostname", "myhost"])
+
+        assert result.exit_code == 0, result.output
+        assert (output_dir / "hosts" / "darwin" / "myhost" / "preferences.nix").is_file()
+
+    def test_inline_scan_runtime_error_fails_cleanly(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+        _register_fake_host(output_dir, "myhost")
+
+        with patch("mac2nix.cli.run_scan", new=AsyncMock(side_effect=RuntimeError("orchestrator failed"))):
+            runner = CliRunner()
+            result = runner.invoke(main, ["generate", str(output_dir), "--hostname", "myhost"])
+
+        assert result.exit_code != 0
+        assert "orchestrator failed" in result.output
+        assert not (output_dir / "hosts" / "darwin" / "myhost" / "preferences.nix").exists()

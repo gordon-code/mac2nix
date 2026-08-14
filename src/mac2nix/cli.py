@@ -22,7 +22,7 @@ from rich.text import Text
 
 from mac2nix import onepassword
 from mac2nix.generators import generate_all
-from mac2nix.generators.scaffold import add_host, age_key_path, init_framework
+from mac2nix.generators.scaffold import _HOSTS_BEGIN, _HOSTS_END, add_host, age_key_path, init_framework
 from mac2nix.models.system_state import SystemState
 from mac2nix.orchestrator import run_scan
 from mac2nix.scan_report import ScannerOutcome, ScannerStatus, capture_scanner_logs, get_remediation_hint
@@ -391,12 +391,18 @@ _ALLOWED_DOMAINS = ("preferences",)
 
 
 def _check_scaffolded_framework(output_dir: Path) -> None:
+    """Matches add_host()'s own scaffolded-framework check in scaffold.py
+    (shared sentinel constants, both markers) -- kept as a second,
+    independent check (not a shared function) since this one must raise
+    click.ClickException while add_host() raises ScaffoldError, but reusing
+    the sentinel constants avoids the two checks silently drifting apart.
+    """
     flake_path = output_dir / "flake.nix"
     try:
-        is_scaffolded = flake_path.is_file() and "# MAC2NIX:HOSTS:BEGIN" in flake_path.read_text()
+        flake_content = flake_path.read_text() if flake_path.is_file() else ""
     except OSError as exc:
         raise click.ClickException(f"Failed to read {flake_path}: {exc}") from exc
-    if not is_scaffolded:
+    if _HOSTS_BEGIN not in flake_content or _HOSTS_END not in flake_content:
         raise click.ClickException(f"{output_dir} is not a mac2nix-scaffolded framework — run `mac2nix init` first")
 
 
@@ -413,7 +419,12 @@ def _check_host_registered(output_dir: Path, hostname: str) -> None:
 
 @main.command()
 @click.argument("output_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option("--hostname", required=True, help="Host to populate (must already be registered via add-host).")
+@click.option(
+    "--hostname",
+    required=True,
+    callback=_validate_hostname,
+    help="Host to populate (must already be registered via add-host).",
+)
 @click.option(
     "--scan-file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
