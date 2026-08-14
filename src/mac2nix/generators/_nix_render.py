@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -20,6 +21,12 @@ def python_to_nix(value: Any) -> str:
     """Recursively render a Python value as a Nix literal."""
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
+        # str() renders these as `inf`/`nan`/`-inf` -- not valid Nix number
+        # literals ("undefined variable 'inf'" at nix-instantiate time,
+        # pointing at the generated file rather than the offending value).
+        msg = f"cannot render {value!r} as a Nix literal -- not a finite number"
+        raise TypeError(msg)
     if isinstance(value, (int, float)):
         return str(value)
     if value is None:

@@ -59,6 +59,16 @@ def test_python_to_nix_raises_typeerror_for_unsupported_type() -> None:
         python_to_nix((1, 2, 3))
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_python_to_nix_raises_typeerror_for_non_finite_float(value: float) -> None:
+    """str(float('inf')) is `inf` -- not a valid Nix number literal (Nix parses
+    it as an undefined variable reference instead). Must fail loud here, not
+    surface as an opaque nix-instantiate syntax error later.
+    """
+    with pytest.raises(TypeError, match="not a finite number"):
+        python_to_nix(value)
+
+
 def test_nix_string_escapes_backslash() -> None:
     value = "a" + _BACKSLASH + "b"
     assert nix_string(value) == _DQUOTE + "a" + _BACKSLASH + _BACKSLASH + "b" + _DQUOTE
