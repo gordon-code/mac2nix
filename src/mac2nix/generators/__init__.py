@@ -132,6 +132,11 @@ def generate_all(system_state: SystemState, output_dir: Path, hostname: str, dom
     wrote their files on disk as-is: `generate` is safely re-runnable, so a
     subsequent successful call regenerates every requested-and-available
     domain's output again.
+
+    Not safe for concurrent invocations against the same *hostname* --
+    its read-modify-write cycle on configuration.nix/.mac2nix-meta.json
+    assumes single-operator, sequential use, matching `add_host()`'s own
+    documented limitation on flake.nix/.sops.yaml.
     """
     host_dir = output_dir / "hosts" / "darwin" / hostname
     if not host_dir.exists():
