@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import shutil
@@ -581,7 +582,10 @@ class SystemScanner(BaseScannerPlugin):
         """
         db_path = Path.home() / "Library" / "Application Support" / "Dock" / "desktoppicture.db"
         try:
-            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            # sqlite3.Connection's own context manager only commits/rolls back
+            # the pending transaction on exit -- it does not close the
+            # connection or its file descriptor. contextlib.closing() does.
+            with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
                 row = conn.execute(_WALLPAPER_QUERY).fetchone()
         except (sqlite3.Error, OSError) as exc:
             logger.warning("Could not read desktop wallpaper from %s: %s", db_path, exc)
