@@ -2,33 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
 import pytest
 
 from mac2nix.generators import GenerateError, generate_all
-from mac2nix.generators.scaffold import _read_template, _render_placeholders
 from mac2nix.models.preferences import PreferencesDomain, PreferencesResult
 from mac2nix.models.system import SystemConfig
 from mac2nix.models.system_state import SystemState
-
-
-def _register_fake_host(output_dir: Path, hostname: str, username: str = "testuser") -> Path:
-    """Build a minimal, real-template-backed registered host without real age-keygen/sops.
-
-    generate_all() only reads/writes configuration.nix and .mac2nix-meta.json
-    -- it never touches secrets/flake.nix, so a full add_host() isn't needed
-    for these unit tests.
-    """
-    host_dir = output_dir / "hosts" / "darwin" / hostname
-    host_dir.mkdir(parents=True)
-    template = _read_template("hosts", "darwin", "configuration.nix")
-    (host_dir / "configuration.nix").write_text(_render_placeholders(template, hostname, username))
-    meta = {"hostname": hostname, "username": username, "system": "aarch64-darwin", "age_public_key": "age1fake"}
-    (host_dir / ".mac2nix-meta.json").write_text(json.dumps(meta))
-    return host_dir
+from tests._generate_helpers import _register_fake_host
 
 
 def _state(*, preferences: PreferencesResult | None, system: SystemConfig | None) -> SystemState:

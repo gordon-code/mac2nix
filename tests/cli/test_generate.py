@@ -2,29 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from mac2nix.cli import main
-from mac2nix.generators.scaffold import _read_template, _render_placeholders, init_framework
+from mac2nix.generators.scaffold import init_framework
 from mac2nix.models.preferences import PreferencesDomain, PreferencesResult
 from mac2nix.models.system import SystemConfig
 from mac2nix.models.system_state import SystemState
-
-
-def _register_fake_host(output_dir: Path, hostname: str, username: str = "testuser") -> Path:
-    """Register a host without real age-keygen/sops -- the generate CLI never touches
-    secrets, only configuration.nix and .mac2nix-meta.json.
-    """
-    host_dir = output_dir / "hosts" / "darwin" / hostname
-    host_dir.mkdir(parents=True)
-    template = _read_template("hosts", "darwin", "configuration.nix")
-    (host_dir / "configuration.nix").write_text(_render_placeholders(template, hostname, username))
-    meta = {"hostname": hostname, "username": username, "system": "aarch64-darwin", "age_public_key": "age1fake"}
-    (host_dir / ".mac2nix-meta.json").write_text(json.dumps(meta))
-    return host_dir
+from tests._generate_helpers import _register_fake_host
 
 
 def _write_scan_file(path: Path) -> None:
