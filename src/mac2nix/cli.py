@@ -385,6 +385,8 @@ def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op
     )
 
 
+# Extend this tuple (never restructure) as each domain generator lands --
+# Task 7 (shell) adds "shell", then Task 6 (homebrew) adds "homebrew".
 _ALLOWED_DOMAINS = ("preferences",)
 
 

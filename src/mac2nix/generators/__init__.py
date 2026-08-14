@@ -154,6 +154,11 @@ def generate_all(system_state: SystemState, output_dir: Path, hostname: str, dom
         else:
             skipped["preferences"] = "not scanned"
 
+    # Extend this literal set (never restructure the mechanism) whenever a new
+    # sibling `if` block is added above -- Task 7 (shell) widens this to
+    # {"preferences", "shell"}, then Task 6 (homebrew) to
+    # {"preferences", "shell", "homebrew"}. Forgetting this line makes a
+    # newly-supported domain wrongly report as `unrecognized`.
     unrecognized = domains - {"preferences"}
 
     _regenerate_host_imports(output_dir, hostname)
