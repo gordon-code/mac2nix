@@ -18,6 +18,11 @@
   # AppleScript source text itself -- a path containing a literal `"` would
   # otherwise terminate the embedded AppleScript string early and allow
   # arbitrary command injection via `&`/`do shell script`.
+  # A headless/SSH-only activation (no WindowServer session for
+  # primaryUser -- e.g. a fleet member switched over a remote session)
+  # would otherwise fail this whole activation script under nix-darwin's
+  # `set -e`; `|| echo ... >&2` keeps that failure non-fatal but still
+  # loud, rather than either aborting the switch or failing silently.
   system.activationScripts.postActivation.text = lib.mkDefault (
     let
       wallpaperPath = << wallpaper_path|nix_str >>;
@@ -27,7 +32,8 @@
         -e 'on run argv' \
         -e '  tell application "System Events" to tell every desktop to set picture to POSIX file (item 1 of argv)' \
         -e 'end run' \
-        ${lib.escapeShellArg wallpaperPath}
+        ${lib.escapeShellArg wallpaperPath} \
+        || echo "mac2nix: could not set desktop wallpaper (no GUI session for ${config.system.primaryUser}?)" >&2
     ''
   );
 <% endif %>

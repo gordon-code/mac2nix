@@ -137,7 +137,7 @@ _POWER_SLEEP_NIX_PATHS = frozenset({"power.sleep.computer", "power.sleep.display
 # pmset reports 0/1 (or Off/On) as a raw string for these.
 _POWER_BOOL_NIX_PATHS = frozenset({"power.restartAfterPowerFailure", "networking.wakeOnLan.enable"})
 
-_POWER_BOOL_FALSE_VALUES = frozenset({"0", "off", "no", "false"})
+_POWER_BOOL_TRUE_VALUES = frozenset({"1", "on", "yes", "true"})
 
 
 def _coerce_power_native_value(nix_path: str, value: Any) -> Any:
@@ -148,7 +148,10 @@ def _coerce_power_native_value(nix_path: str, value: Any) -> Any:
             return value
         return "never" if minutes <= 0 else minutes
     if nix_path in _POWER_BOOL_NIX_PATHS:
-        return str(value).strip().lower() not in _POWER_BOOL_FALSE_VALUES
+        # Positive match, not `not in {false-values}` -- an empty string or an
+        # unrecognized future pmset value must coerce to False (matching this
+        # generator's mkDefault-everywhere conservatism), not silently to True.
+        return str(value).strip().lower() in _POWER_BOOL_TRUE_VALUES
     return value
 
 

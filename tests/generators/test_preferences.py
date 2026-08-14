@@ -137,6 +137,18 @@ class TestBuildRenderContext:
         assert by_path["power.restartAfterPowerFailure"] is False
         assert by_path["networking.wakeOnLan.enable"] is True
 
+    def test_power_boolean_setting_defaults_false_for_unrecognized_value(self) -> None:
+        """A positive match against known true-values, not `not in {false-values}` --
+        an empty string or an unrecognized future pmset value must coerce to
+        False, matching this generator's mkDefault-everywhere conservatism,
+        not silently default to True.
+        """
+        items = _collect_power_items({"ac_power.autorestart": "", "ac_power.womp": "some-future-value"})
+        context = _build_render_context(items)
+        by_path = {i["nix_path"]: i["value"] for i in context["native_items"]}
+        assert by_path["power.restartAfterPowerFailure"] is False
+        assert by_path["networking.wakeOnLan.enable"] is False
+
     def test_custom_prefs_grouped_by_domain_and_key(self) -> None:
         domains = [_domain("com.apple.symbolichotkeys", {"AppleSymbolicHotKeys": {"32": {"enabled": 0}}})]
         items = _collect_preference_items(domains)
@@ -221,6 +233,13 @@ class TestGeneratePreferences:
         assert "system.activationScripts.postActivation.text" in rendered
         assert "The Cliffs.heic" in rendered
         assert "lib.escapeShellArg" in rendered
+
+        # A headless/SSH-only activation (no WindowServer session for
+        # primaryUser) must not abort the whole activation under
+        # nix-darwin's `set -e` -- the osascript call has a non-fatal,
+        # loud fallback.
+        assert "|| echo" in rendered
+        assert "no GUI session" in rendered
 
     def test_skipped_ephemeral_key_produces_no_manual_report_comment(self) -> None:
         # A key/value shaped to trip is_ephemeral()'s UI-state detection.
