@@ -33,11 +33,15 @@
             # source/dependency resolution -- uv must never try to create its
             # venv there (its own default, and any ambient
             # $UV_PROJECT_ENVIRONMENT override, both assume a writable
-            # project root). Force the venv into a fresh, writable temp dir
-            # instead, independent of the caller's environment.
+            # project root). Force the venv into a stable, writable cache
+            # location instead of a fresh `mktemp -d` per invocation -- `uv`
+            # creates any missing parent directories itself, and reusing the
+            # same venv makes repeat invocations a fast no-op sync instead of
+            # a full dependency install, and never leaves orphaned venv
+            # directories behind in $TMPDIR.
             program = toString (
               pkgs.writeShellScript "mac2nix" ''
-                export UV_PROJECT_ENVIRONMENT="$(${pkgs.coreutils}/bin/mktemp -d)/venv"
+                export UV_PROJECT_ENVIRONMENT="''${XDG_CACHE_HOME:-$HOME/.cache}/mac2nix/nix-run-venv"
                 exec ${pkgs.uv}/bin/uv run --project ${self} mac2nix "$@"
               ''
             );
