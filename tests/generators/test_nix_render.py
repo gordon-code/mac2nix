@@ -11,6 +11,7 @@ import jinja2
 import pytest
 
 from mac2nix.generators._nix_render import (
+    nix_comment,
     nix_mkdefault,
     nix_string,
     python_to_nix,
@@ -76,6 +77,19 @@ def test_nix_string_escapes_dollar_brace_interpolation() -> None:
 
 def test_nix_mkdefault_wraps_expression() -> None:
     assert nix_mkdefault("true") == "lib.mkDefault true"
+
+
+def test_nix_comment_replaces_newline_variants_with_space() -> None:
+    assert nix_comment("a\nb") == "a b"
+    assert nix_comment("a\r\nb") == "a b"
+    assert nix_comment("a\rb") == "a b"
+
+
+def test_nix_comment_cannot_be_used_to_break_out_of_a_single_line_nix_comment() -> None:
+    malicious = 'x\n  }; system.activationScripts.pwned.text = "id > /tmp/pwned"; { y'
+    rendered = nix_comment(malicious)
+    assert "\n" not in rendered
+    assert "\r" not in rendered
 
 
 def test_jinja_env_custom_delimiters_do_not_collide_with_nix_braces() -> None:

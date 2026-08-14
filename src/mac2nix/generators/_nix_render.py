@@ -43,6 +43,19 @@ def nix_mkdefault(nix_expr: str) -> str:
     return f"lib.mkDefault {nix_expr}"
 
 
+def nix_comment(text: str) -> str:
+    """Render *text* as safe content for a single-line Nix `#` comment.
+
+    A `#` comment ends at the first newline -- free-text that ultimately
+    derives from scanned, attacker-writable data (e.g. a plist key name
+    via `defaults write`) could otherwise embed a newline and break out of
+    the comment, turning the rest of the string into live Nix syntax.
+    Replace rather than strip so multi-line input stays visible (if
+    garbled) instead of silently disappearing.
+    """
+    return text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
 def setup_jinja_env(loader: jinja2.BaseLoader | None = None) -> jinja2.Environment:
     """Build the Jinja2 environment shared by every mac2nix Nix template.
 
@@ -63,6 +76,7 @@ def setup_jinja_env(loader: jinja2.BaseLoader | None = None) -> jinja2.Environme
     env.filters["nix_value"] = python_to_nix
     env.filters["nix_str"] = nix_string
     env.filters["mkdefault"] = nix_mkdefault
+    env.filters["nix_comment"] = nix_comment
     return env
 
 
