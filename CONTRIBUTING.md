@@ -39,6 +39,7 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org/
 | `drift`      | Configuration drift detection      |
 | `deps`       | Dependency updates                 |
 | `ci`         | CI/CD pipeline                     |
+| `tests`      | Test-only infrastructure/helpers   |
 
 ### Examples
 
