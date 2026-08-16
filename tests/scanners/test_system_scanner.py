@@ -936,6 +936,22 @@ class TestWallpaperDetection:
 
         assert result == Path("/System/Library/Desktop Pictures/The Cliffs.heic")
 
+    def test_home_path_with_uri_reserved_characters_still_resolves(self, tmp_path: Path) -> None:
+        """A literal '?' or '#' in the path (e.g. an unusual macOS username) must not be
+        misparsed as the start of the file: URI's query string/fragment -- without
+        percent-encoding, sqlite3 would silently truncate the path there and either
+        fail to open the real db or open the wrong location.
+        """
+        home = tmp_path / "AC?DC#1"
+        home.mkdir()
+        db_path = home / "Library" / "Application Support" / "Dock" / "desktoppicture.db"
+        _write_wallpaper_db(db_path, [(1, "/System/Library/Desktop Pictures/The Cliffs.heic")])
+
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=home):
+            result = SystemScanner()._get_wallpaper_path()
+
+        assert result == Path("/System/Library/Desktop Pictures/The Cliffs.heic")
+
     def test_most_recently_written_path_wins(self, tmp_path: Path) -> None:
         db_path = self._db_path(tmp_path)
         _write_wallpaper_db(

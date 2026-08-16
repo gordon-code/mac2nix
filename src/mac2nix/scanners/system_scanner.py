@@ -10,6 +10,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from mac2nix.models.system import (
     ICloudState,
@@ -585,14 +586,18 @@ class SystemScanner(BaseScannerPlugin):
             # sqlite3.Connection's own context manager only commits/rolls back
             # the pending transaction on exit -- it does not close the
             # connection or its file descriptor. contextlib.closing() does.
-            with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+            # The path must be percent-encoded before being embedded in a
+            # file: URI -- an unescaped '?' or '#' in the path would otherwise
+            # be misparsed as the start of the URI's query string/fragment.
+            db_uri = quote(str(db_path), safe="/")
+            with contextlib.closing(sqlite3.connect(f"file:{db_uri}?mode=ro", uri=True)) as conn:
                 row = conn.execute(_WALLPAPER_QUERY).fetchone()
         except (sqlite3.Error, OSError) as exc:
-            logger.warning("Could not read desktop wallpaper from %s: %s", db_path, exc)
+            logger.debug("Could not read desktop wallpaper from %s: %s", db_path, exc)
             return None
 
         if not row or not row[0]:
-            logger.warning(
+            logger.debug(
                 "desktoppicture.db query returned no matching row (expected a "
                 "'preferences' row with key=1 pointing to an absolute-path 'data' "
                 "value) -- wallpaper_path will be unset"
