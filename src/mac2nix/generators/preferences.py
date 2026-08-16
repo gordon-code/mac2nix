@@ -88,8 +88,30 @@ class _CuratedItem:
 
 
 def _collect_preference_items(domains: list[PreferencesDomain]) -> list[_CuratedItem]:
+    """Collect curated items from wholesale domains and the global-domain alias.
+
+    `PreferencesScanner._discover_cfprefsd_domains()` only skips a cfprefsd
+    domain name already present in `seen` -- and `seen` is populated from
+    on-disk plist file *stems*, so the on-disk ".GlobalPreferences.plist"
+    (stem ".GlobalPreferences") never matches the literal string
+    "NSGlobalDomain" that `defaults domains` reports. This means a real scan
+    of any Mac with a `.GlobalPreferences.plist` (virtually all of them)
+    deterministically produces BOTH domains for the same underlying global
+    preferences. When they disagree on a curated key's value, NSGlobalDomain
+    (cfprefsd, live) wins over .GlobalPreferences (on-disk) explicitly here
+    -- not by incidental scan-order -- because cfprefsd's in-memory cache is
+    documented by Apple as the authoritative source: it batches writes to
+    disk asynchronously, so the on-disk plist can lag the live value by
+    design (the same reason `killall cfprefsd` is a real troubleshooting
+    step for "my defaults write didn't take effect").
+    """
+    domain_names = {d.domain_name for d in domains}
+    skip_stale_global_preferences_alias = "NSGlobalDomain" in domain_names
+
     items: list[_CuratedItem] = []
     for domain in domains:
+        if domain.domain_name == ".GlobalPreferences" and skip_stale_global_preferences_alias:
+            continue
         if domain.domain_name in CURATED_WHOLESALE_DOMAINS:
             keys_to_scan: list[str] = list(domain.keys)
         elif domain.domain_name in _GLOBAL_DOMAIN_NAMES:
@@ -133,11 +155,27 @@ def _collect_power_items(power_settings: dict[str, str]) -> list[_CuratedItem]:
 # _collect_power_items()'s section-prefix stripping already is.
 _POWER_SLEEP_NIX_PATHS = frozenset({"power.sleep.computer", "power.sleep.display", "power.sleep.harddisk"})
 
-# power.restartAfterPowerFailure / networking.wakeOnLan.enable are booleans;
-# pmset reports 0/1 (or Off/On) as a raw string for these.
-_POWER_BOOL_NIX_PATHS = frozenset({"power.restartAfterPowerFailure", "networking.wakeOnLan.enable"})
-
-_POWER_BOOL_TRUE_VALUES = frozenset({"1", "on", "yes", "true"})
+# power.restartAfterPowerFailure / networking.wakeOnLan.enable are gated by
+# nix-darwin's own systemsetup-backed activation scripts -- whether the
+# TARGET machine's hardware supports either feature can't be known from a
+# SOURCE-machine scan. Confirmed via a real `nix_vm` integration-test
+# failure (not review): nix-darwin's modules/system/checks.nix ships
+# `restartAfterPowerFailureIsSupported`, which fires whenever
+# `config.power.restartAfterPowerFailure != null` -- true OR false, either
+# one -- and calls `exit 2` inside the single `set -e` master activation
+# script (modules/system/activation-scripts.nix), aborting the ENTIRE
+# `darwin-rebuild switch`, not just this one setting. There is no safe
+# boolean value; only leaving the option unset (its own `null` default)
+# avoids the check. `networking.wakeOnLan.enable` has no equivalent
+# nix-darwin pre-check at all, but its own activation script calls the
+# same `systemsetup` family with no `|| true` guard under the identical
+# `set -e` wrapper -- a documented real-world failure on hardware/drivers
+# that report Wake-on-LAN as unsupported (nix-darwin's own option
+# docstring: "Battery powered devices may require being connected to
+# power."). Never render either option natively -- this generator has no
+# mechanism to detect target-hardware capability at generate or apply
+# time, so both are downgraded to a manual-report comment instead.
+_POWER_HARDWARE_DEPENDENT_NIX_PATHS = frozenset({"power.restartAfterPowerFailure", "networking.wakeOnLan.enable"})
 
 
 def _coerce_power_native_value(nix_path: str, value: Any) -> Any:
@@ -147,11 +185,6 @@ def _coerce_power_native_value(nix_path: str, value: Any) -> Any:
         except (TypeError, ValueError):
             return value
         return "never" if minutes <= 0 else minutes
-    if nix_path in _POWER_BOOL_NIX_PATHS:
-        # Positive match, not `not in {false-values}` -- an empty string or an
-        # unrecognized future pmset value must coerce to False (matching this
-        # generator's mkDefault-everywhere conservatism), not silently to True.
-        return str(value).strip().lower() in _POWER_BOOL_TRUE_VALUES
     return value
 
 
@@ -164,21 +197,48 @@ def _build_render_context(items: list[_CuratedItem]) -> dict[str, Any]:
     "power.sleep.computer" nix-darwin option, which has no per-power-source
     control). Iterating `sorted(native.items())` for the final render list
     keeps output deterministic regardless of dict insertion order.
+
+    MANUAL_REPORT comments get two further, independent dedup passes for the
+    same underlying reason (pmset reports some keys under both "AC Power:"
+    and "Battery Power:"): a `nix_path`-keyed, first-occurrence-wins dedup
+    for the hardware-dependent power/networking settings (whose comment text
+    embeds the scanned value, so two different values must still collapse to
+    one entry), and a final whole-list `dict.fromkeys()` pass for unmapped
+    fields whose destination string never varies by value (so an
+    exact-string dedup is sufficient there).
     """
     native: dict[str, Any] = {}
     custom_user_prefs: dict[str, dict[str, Any]] = {}
     custom_system_prefs: dict[str, dict[str, Any]] = {}
     wallpaper_path: str | None = None
     manual_report_comments: list[str] = []
+    reported_hardware_dependent_paths: set[str] = set()
 
     for item in items:
         result = item.result
         metadata = result.metadata or {}
 
-        if result.tier == ClassificationTier.NATIVE and result.nix_path is not None:
-            value = result.coercion(item.value) if result.coercion else item.value
-            value = _coerce_power_native_value(result.nix_path, value)
-            native[result.nix_path] = value
+        if result.tier == ClassificationTier.NATIVE:
+            if result.nix_path in _POWER_HARDWARE_DEPENDENT_NIX_PATHS:
+                # pmset reports some keys (e.g. "autorestart", "womp") under
+                # both the "AC Power:" and "Battery Power:" sections even
+                # though the underlying setting isn't actually
+                # per-power-source -- the same duplication `native`'s
+                # dict-write already dedupes for NATIVE paths. Dedupe here
+                # too, or a real scan produces two identical manual-report
+                # comments for the same nix_path.
+                if result.nix_path not in reported_hardware_dependent_paths:
+                    reported_hardware_dependent_paths.add(result.nix_path)
+                    manual_report_comments.append(
+                        f"manual report: {result.nix_path} (scanned value {item.value!r}) not applied -- "
+                        "target-hardware support for this setting can't be verified from a source-machine "
+                        "scan; setting it on unsupported hardware aborts the entire darwin-rebuild switch. "
+                        "Verify with `systemsetup -get...` on the target Mac and set manually if supported."
+                    )
+            elif result.nix_path is not None:
+                value = result.coercion(item.value) if result.coercion else item.value
+                value = _coerce_power_native_value(result.nix_path, value)
+                native[result.nix_path] = value
         elif result.tier == ClassificationTier.CUSTOM_PREFS:
             if item.domain is None or item.key is None:
                 # Every CUSTOM_PREFS item this generator produces is
@@ -191,9 +251,25 @@ def _build_render_context(items: list[_CuratedItem]) -> dict[str, Any]:
             if "wallpaper_path" in metadata:
                 wallpaper_path = metadata["wallpaper_path"]
             else:
+                # This generator only implements the wallpaper case for
+                # ACTIVATION_SCRIPT; any other Tier-3 result (e.g. a
+                # binary-data plist value) intentionally falls back to a
+                # manual-report comment instead of a real activation
+                # script, since synthesizing an arbitrary `defaults write`
+                # script for binary data is out of this narrow generator's
+                # scope.
                 manual_report_comments.append(result.destination)
         elif not metadata.get("skipped"):
             manual_report_comments.append(result.destination)
+
+    # A real, confirmed-on-hardware case: pmset reports some keys (e.g.
+    # "hibernatemode") under both "AC Power:" and "Battery Power:" with
+    # different values, but classify_system_setting()'s MANUAL_REPORT
+    # destination string for an unmapped field doesn't include the value --
+    # so two source-prefixed keys for the same unmapped field produce two
+    # identical comment strings. dict.fromkeys() dedupes exact-duplicate
+    # strings while preserving first-occurrence order.
+    manual_report_comments = list(dict.fromkeys(manual_report_comments))
 
     return {
         "native_items": [{"nix_path": path, "value": value} for path, value in sorted(native.items())],

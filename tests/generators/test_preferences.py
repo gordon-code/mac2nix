@@ -113,6 +113,54 @@ class TestBuildRenderContext:
         matching = [i for i in context["native_items"] if i["nix_path"] == "power.sleep.computer"]
         assert len(matching) == 1
 
+    def test_unmapped_field_from_two_power_sources_produces_one_manual_report_comment(self) -> None:
+        """Confirmed on real hardware via `pmset -g custom`: an unmapped key like
+        'hibernatemode' can appear under both "AC Power:" and "Battery Power:"
+        with DIFFERENT values, but classify_system_setting()'s MANUAL_REPORT
+        destination string for an unmapped field never includes the value --
+        two source-prefixed keys must still produce exactly one comment, not two
+        identical duplicates.
+        """
+        items = _collect_power_items({"ac_power.hibernatemode": "3", "battery_power.hibernatemode": "0"})
+        context = _build_render_context(items)
+        matching = [c for c in context["manual_report_comments"] if "hibernatemode" in c]
+        assert len(matching) == 1
+
+    @pytest.mark.parametrize(
+        "domains",
+        [
+            pytest.param(
+                [_domain("NSGlobalDomain", {"KeyRepeat": 2}), _domain(".GlobalPreferences", {"KeyRepeat": 6})],
+                id="nsglobaldomain-first",
+            ),
+            pytest.param(
+                [_domain(".GlobalPreferences", {"KeyRepeat": 6}), _domain("NSGlobalDomain", {"KeyRepeat": 2})],
+                id="globalpreferences-first",
+            ),
+        ],
+    )
+    def test_global_domain_alias_conflict_nsglobaldomain_wins_deterministically(
+        self, domains: list[PreferencesDomain]
+    ) -> None:
+        """Both 'NSGlobalDomain' and '.GlobalPreferences' are guaranteed to appear as
+        domain_name in the same real scan: PreferencesScanner._discover_cfprefsd_domains()
+        only skips a cfprefsd domain already in `seen`, and `seen` is populated from
+        on-disk plist file *stems* -- ".GlobalPreferences.plist"'s stem never matches the
+        literal string "NSGlobalDomain" that `defaults domains` reports, so any Mac with
+        a `.GlobalPreferences.plist` (virtually all of them) produces both. When they
+        disagree, NSGlobalDomain (cfprefsd, live) must win over .GlobalPreferences
+        (on-disk) -- Apple's own documentation states cfprefsd's in-memory cache is
+        authoritative and the on-disk plist is only asynchronously, eventually
+        reconciled with it. This must hold regardless of scan/list order -- parametrized
+        both ways to prove it's not an incidental artifact of iteration order.
+        """
+        items = _collect_preference_items(domains)
+        context = _build_render_context(items)
+
+        matching = [i for i in context["native_items"] if i["nix_path"] == "system.defaults.NSGlobalDomain.KeyRepeat"]
+        assert len(matching) == 1
+        assert matching[0]["value"] == 2
+
     def test_power_sleep_zero_coerces_to_never_not_integer_zero(self) -> None:
         """nix-darwin's power.sleep.* type is `null | positive-int | "never"` --
         confirmed via a real `nix build` failure: the integer 0 isn't itself a
@@ -130,24 +178,59 @@ class TestBuildRenderContext:
         assert item["value"] == 10
         assert isinstance(item["value"], int)
 
-    def test_power_boolean_setting_coerces_from_raw_string(self) -> None:
-        items = _collect_power_items({"ac_power.autorestart": "0", "ac_power.womp": "1"})
-        context = _build_render_context(items)
-        by_path = {i["nix_path"]: i["value"] for i in context["native_items"]}
-        assert by_path["power.restartAfterPowerFailure"] is False
-        assert by_path["networking.wakeOnLan.enable"] is True
-
-    def test_power_boolean_setting_defaults_false_for_unrecognized_value(self) -> None:
-        """A positive match against known true-values, not `not in {false-values}` --
-        an empty string or an unrecognized future pmset value must coerce to
-        False, matching this generator's mkDefault-everywhere conservatism,
-        not silently default to True.
+    @pytest.mark.parametrize(
+        "power_settings",
+        [
+            pytest.param({"ac_power.autorestart": "0", "ac_power.womp": "1"}, id="typical-values"),
+            pytest.param({"ac_power.autorestart": "", "ac_power.womp": "some-future-value"}, id="edge-case-values"),
+        ],
+    )
+    def test_power_hardware_dependent_settings_never_render_as_native(self, power_settings: dict[str, str]) -> None:
+        """Confirmed via a real `nix_vm` integration-test failure: nix-darwin's own
+        modules/system/checks.nix aborts the ENTIRE `darwin-rebuild switch` whenever
+        `power.restartAfterPowerFailure` is set at all (true OR false) on hardware that
+        doesn't support it, and `networking.wakeOnLan.enable` carries the same
+        unsupported-hardware risk with no nix-darwin guard at all. Neither can be
+        safely auto-applied from a source-machine scan -- both must route to a
+        manual-report comment instead of `context["native_items"]`, regardless of the
+        scanned value (classify_system_setting() decides tier/nix_path purely from
+        field_name, never from value, so this holds for typical and edge-case values
+        alike -- parametrized rather than duplicated as two near-identical tests).
         """
-        items = _collect_power_items({"ac_power.autorestart": "", "ac_power.womp": "some-future-value"})
+        items = _collect_power_items(power_settings)
         context = _build_render_context(items)
-        by_path = {i["nix_path"]: i["value"] for i in context["native_items"]}
-        assert by_path["power.restartAfterPowerFailure"] is False
-        assert by_path["networking.wakeOnLan.enable"] is False
+        native_paths = {i["nix_path"] for i in context["native_items"]}
+        assert "power.restartAfterPowerFailure" not in native_paths
+        assert "networking.wakeOnLan.enable" not in native_paths
+        assert any("power.restartAfterPowerFailure" in c for c in context["manual_report_comments"])
+        assert any("networking.wakeOnLan.enable" in c for c in context["manual_report_comments"])
+
+    def test_power_hardware_dependent_settings_dedupe_across_power_sources(self) -> None:
+        """pmset reports `autorestart`/`womp` under both the "AC Power:" and
+        "Battery Power:" sections even though the underlying setting isn't
+        actually per-power-source -- two source-prefixed keys resolving to the
+        same nix_path must produce exactly one manual-report comment, not two,
+        mirroring the dedup NATIVE items already get via dict-write. Uses
+        DIFFERING values across sources (confirmed real via `pmset -g custom` on
+        real hardware, which reports different autorestart/womp values per
+        section) specifically because the rendered comment embeds the scanned
+        value -- a naive whole-list string dedup would NOT catch two differing
+        values for the same nix_path, so this proves the nix_path-keyed dedup
+        mechanism itself, not just incidental string equality.
+        """
+        items = _collect_power_items(
+            {
+                "ac_power.autorestart": "0",
+                "battery_power.autorestart": "1",
+                "ac_power.womp": "1",
+                "battery_power.womp": "0",
+            }
+        )
+        context = _build_render_context(items)
+        restart_comments = [c for c in context["manual_report_comments"] if "power.restartAfterPowerFailure" in c]
+        wol_comments = [c for c in context["manual_report_comments"] if "networking.wakeOnLan.enable" in c]
+        assert len(restart_comments) == 1
+        assert len(wol_comments) == 1
 
     def test_custom_prefs_grouped_by_domain_and_key(self) -> None:
         domains = [_domain("com.apple.symbolichotkeys", {"AppleSymbolicHotKeys": {"32": {"enabled": 0}}})]
@@ -192,6 +275,25 @@ class TestBuildRenderContext:
         result = classify_wallpaper(Path("/System/Library/Desktop Pictures/The Cliffs.heic"))
         context = _build_render_context([_CuratedItem(value=Path("/x"), result=result)])
         assert context["wallpaper_path"] == "/System/Library/Desktop Pictures/The Cliffs.heic"
+
+    def test_binary_data_activation_script_without_wallpaper_falls_back_to_manual_report(self) -> None:
+        """classify_preference's binary-sentinel precheck routes a `<data:N bytes>` value to
+        ACTIVATION_SCRIPT with metadata {command_type, domain, key, value_type, value} -- no
+        "wallpaper_path" key. _build_render_context's ACTIVATION_SCRIPT branch only extracts
+        wallpaper_path; this generator has no support for rendering an arbitrary `defaults
+        write` activation script, so any other ACTIVATION_SCRIPT item must fall back to a
+        manual-report comment instead of being silently dropped.
+        """
+        domains = [_domain("com.apple.dock", {"some-binary-pref": "<data:16 bytes>"})]
+        items = _collect_preference_items(domains)
+        assert items[0].result.tier == ClassificationTier.ACTIVATION_SCRIPT
+        assert "wallpaper_path" not in (items[0].result.metadata or {})
+
+        context = _build_render_context(items)
+        assert context["manual_report_comments"] == [
+            "activationScripts: defaults write for com.apple.dock some-binary-pref (binary data)"
+        ]
+        assert context["wallpaper_path"] is None
 
 
 class TestGeneratePreferences:
@@ -303,7 +405,7 @@ def test_render_is_valid_nix(require_nix_instantiate: None, tmp_path: Path) -> N
     ]
     system = SystemConfig(
         hostname="h",
-        power_settings={"ac_power.sleep": "0"},
+        power_settings={"ac_power.sleep": "0", "ac_power.autorestart": "0", "ac_power.womp": "1"},
         wallpaper_path=Path("/System/Library/Desktop Pictures/The Cliffs.heic"),
     )
     state = _state(preferences=PreferencesResult(domains=domains), system=system)
@@ -311,6 +413,14 @@ def test_render_is_valid_nix(require_nix_instantiate: None, tmp_path: Path) -> N
     rendered = generate_preferences(state)
     module_path = tmp_path / "preferences.nix"
     module_path.write_text(rendered)
+
+    # The two hardware-dependent settings' manual-report comment embeds the
+    # scanned value via !r -- confirm it actually rendered (not silently
+    # dropped) before the nix-instantiate check below, so this test would
+    # fail loudly if that branch stopped firing rather than just passing
+    # trivially on an empty comment section.
+    assert "power.restartAfterPowerFailure" in rendered
+    assert "networking.wakeOnLan.enable" in rendered
 
     result = subprocess.run(  # noqa: S603
         ["nix-instantiate", "--parse", str(module_path)],  # noqa: S607
