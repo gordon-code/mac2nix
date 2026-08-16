@@ -129,3 +129,29 @@ class TestGenerateAll:
 
         with pytest.raises(GenerateError, match="sentinel"):
             generate_all(_full_state(), output_dir, "myhost", {"preferences"})
+
+        # generate_all()'s documented partial-failure guarantee: a domain
+        # generator that already ran and wrote its file before the later
+        # sentinel-parsing failure must have that file survive on disk.
+        assert (host_dir / "preferences.nix").exists()
+
+    def test_corrupt_meta_file_handled_gracefully(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """A hand-corrupted `.mac2nix-meta.json` must not crash generate_all() or
+        spuriously warn -- mirrors test_scaffold.py's
+        test_corrupt_state_file_handled_gracefully for add_host()'s analogous
+        `.mac2nix-state.json` mechanism.
+        """
+        output_dir = tmp_path / "repo"
+        host_dir = _register_fake_host(output_dir, "myhost")
+
+        generate_all(_full_state(), output_dir, "myhost", {"preferences"})
+
+        (host_dir / ".mac2nix-meta.json").write_text("{not valid json")
+
+        with caplog.at_level(logging.WARNING):
+            result = generate_all(_full_state(), output_dir, "myhost", {"preferences"})
+
+        assert not caplog.records
+        assert result.ran == {"preferences"}
+        assert result.skipped == {}
+        assert (host_dir / "preferences.nix").exists()

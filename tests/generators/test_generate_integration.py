@@ -34,13 +34,15 @@ _HOSTNAME = "mac2nix-generate-nix-build-test"
 
 
 def _realistic_state() -> SystemState:
-    """Covers all four render buckets: NATIVE (dock, plus power settings --
-    including a POWER_SETTING_MAP-mapped sleep/boolean key, not just an
-    unmapped one -- a real `nix build` failure caught power.sleep.* needing
-    `null | positive-int | "never"`, not a raw scanned string, so this
-    fixture must actually exercise that coercion path), CUSTOM_PREFS
-    (symbolichotkeys-shaped), ACTIVATION_SCRIPT (wallpaper), and a
-    non-skipped MANUAL_REPORT (an unmapped pmset key).
+    """Covers all four render buckets: NATIVE (dock, plus a POWER_SETTING_MAP-mapped
+    sleep key, not just an unmapped one -- a real `nix build` failure caught
+    power.sleep.* needing `null | positive-int | "never"`, not a raw scanned
+    string, so this fixture must actually exercise that coercion path),
+    CUSTOM_PREFS (symbolichotkeys-shaped), ACTIVATION_SCRIPT (wallpaper), and
+    non-skipped MANUAL_REPORT entries (an unmapped pmset key, plus the two
+    hardware-dependent power/networking keys that a real `nix_vm` test
+    failure proved unsafe to auto-apply -- see preferences.py's
+    `_POWER_HARDWARE_DEPENDENT_NIX_PATHS`).
     """
     domains = [
         PreferencesDomain(domain_name="com.apple.dock", keys={"tilesize": 48}),
@@ -54,8 +56,8 @@ def _realistic_state() -> SystemState:
         power_settings={
             "ac_power.sleep": "0",  # POWER_SETTING_MAP-mapped -> power.sleep.computer ("never")
             "battery_power.displaysleep": "10",  # POWER_SETTING_MAP-mapped -> power.sleep.display (int)
-            "ac_power.womp": "1",  # POWER_SETTING_MAP-mapped -> networking.wakeOnLan.enable (bool)
-            "ac_power.autorestart": "0",  # POWER_SETTING_MAP-mapped -> power.restartAfterPowerFailure (bool)
+            "ac_power.womp": "1",  # -> networking.wakeOnLan.enable (MANUAL_REPORT, hardware-dependent)
+            "ac_power.autorestart": "0",  # -> power.restartAfterPowerFailure (MANUAL_REPORT, hardware-dependent)
             "ac_power.hibernatemode": "3",  # not in POWER_SETTING_MAP -> MANUAL_REPORT
         },
         wallpaper_path=Path("/System/Library/Desktop Pictures/The Cliffs.heic"),
