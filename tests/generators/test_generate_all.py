@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -21,6 +22,15 @@ def _state(*, preferences: PreferencesResult | None, system: SystemConfig | None
 def _full_state() -> SystemState:
     domains = [PreferencesDomain(domain_name="com.apple.dock", keys={"tilesize": 48})]
     return _state(preferences=PreferencesResult(domains=domains), system=SystemConfig(hostname="h"))
+
+
+def _state_with_wallpaper(wallpaper_path: Path) -> SystemState:
+    domains = [PreferencesDomain(domain_name="com.apple.dock", keys={"tilesize": 48})]
+    system = SystemConfig(hostname="h", wallpaper_path=wallpaper_path)
+    return _state(preferences=PreferencesResult(domains=domains), system=system)
+
+
+_JPEG_MAGIC = b"\xff\xd8\xff\xe0" + b"\x00" * 50
 
 
 class TestGenerateAll:
@@ -189,3 +199,80 @@ class TestGenerateAll:
         assert result.ran == {"preferences"}
         assert result.skipped == {}
         assert (host_dir / "preferences.nix").exists()
+
+
+class TestGenerateAllWallpaperAsset:
+    def _bundleable_wallpaper_source(self, tmp_path: Path) -> tuple[Path, Path]:
+        home = tmp_path / "home"
+        (home / "Pictures").mkdir(parents=True)
+        source = home / "Pictures" / "sunset.jpg"
+        source.write_bytes(_JPEG_MAGIC)
+        return home, source
+
+    def test_writes_bundled_wallpaper_asset_alongside_preferences(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "repo"
+        host_dir = _register_fake_host(output_dir, "myhost")
+        home, source = self._bundleable_wallpaper_source(tmp_path)
+
+        with patch("mac2nix.generators.preferences.Path.home", return_value=home):
+            result = generate_all(_state_with_wallpaper(source), output_dir, "myhost", {"preferences"})
+
+        assert result.ran == {"preferences"}
+        asset_path = host_dir / "assets" / "wallpaper.jpg"
+        assert asset_path.is_file()
+        assert asset_path.read_bytes() == _JPEG_MAGIC
+        assert "toString ./assets/wallpaper.jpg" in (host_dir / "preferences.nix").read_text()
+
+    def test_second_generate_with_unchanged_wallpaper_does_not_rewrite_asset(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "repo"
+        host_dir = _register_fake_host(output_dir, "myhost")
+        home, source = self._bundleable_wallpaper_source(tmp_path)
+
+        with patch("mac2nix.generators.preferences.Path.home", return_value=home):
+            generate_all(_state_with_wallpaper(source), output_dir, "myhost", {"preferences"})
+            asset_path = host_dir / "assets" / "wallpaper.jpg"
+            mtime_before = asset_path.stat().st_mtime_ns
+
+            generate_all(_state_with_wallpaper(source), output_dir, "myhost", {"preferences"})
+
+        assert asset_path.stat().st_mtime_ns == mtime_before
+
+    def test_hand_edited_asset_warns_but_still_overwrites(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        output_dir = tmp_path / "repo"
+        host_dir = _register_fake_host(output_dir, "myhost")
+        home, source = self._bundleable_wallpaper_source(tmp_path)
+
+        with patch("mac2nix.generators.preferences.Path.home", return_value=home):
+            generate_all(_state_with_wallpaper(source), output_dir, "myhost", {"preferences"})
+            asset_path = host_dir / "assets" / "wallpaper.jpg"
+            asset_path.write_bytes(b"hand-edited content")
+
+            with caplog.at_level(logging.WARNING):
+                generate_all(_state_with_wallpaper(source), output_dir, "myhost", {"preferences"})
+
+        assert any("hand-edit" in record.message for record in caplog.records)
+        assert asset_path.read_bytes() == _JPEG_MAGIC
+
+    def test_corrupt_meta_file_still_writes_asset(self, tmp_path: Path) -> None:
+        """`_write_wallpaper_asset`'s `_read_host_meta` exception path (`meta = None`
+        on a corrupt/unreadable `.mac2nix-meta.json`) is only reached when a wallpaper
+        asset actually needs writing -- `test_corrupt_meta_file_handled_gracefully`
+        (this module) covers the exception path in isolation but never with a
+        wallpaper present, so the `meta = None` fallback inside this specific function
+        was untested. The asset write itself must still succeed even though the
+        hash-tracking/hand-edit-warning half of the function can't run without meta.
+        """
+        output_dir = tmp_path / "repo"
+        host_dir = _register_fake_host(output_dir, "myhost")
+        home, source = self._bundleable_wallpaper_source(tmp_path)
+        (host_dir / ".mac2nix-meta.json").write_text("{not valid json")
+
+        with patch("mac2nix.generators.preferences.Path.home", return_value=home):
+            result = generate_all(_state_with_wallpaper(source), output_dir, "myhost", {"preferences"})
+
+        assert result.ran == {"preferences"}
+        asset_path = host_dir / "assets" / "wallpaper.jpg"
+        assert asset_path.is_file()
+        assert asset_path.read_bytes() == _JPEG_MAGIC

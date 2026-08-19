@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mac2nix.generators.preferences import generate_preferences
+from mac2nix.generators.preferences import WallpaperAsset, generate_preferences
 from mac2nix.models.system_state import SystemState
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,45 @@ def _store_host_imports_hash(host_dir: Path, inner: str) -> None:
         return
     meta["generate_imports_hash"] = hashlib.sha256(inner.encode()).hexdigest()
     (host_dir / _META_FILENAME).write_text(json.dumps(meta, indent=2))
+
+
+def _write_wallpaper_asset(host_dir: Path, asset: WallpaperAsset) -> None:
+    """Write a bundled wallpaper asset under `host_dir/assets/`.
+
+    Mirrors `_warn_if_host_imports_hand_edited`/`_store_host_imports_hash`'s
+    hash-tracking pattern: warns if the on-disk file was hand-edited since
+    mac2nix last wrote it, and skips a gratuitous rewrite when the content
+    hasn't actually changed. Orphaned assets left behind by a wallpaper
+    change/removal are an accepted non-goal, consistent with this module's
+    existing never-deletes-stale-files behavior for `.nix` outputs.
+    """
+    dest = host_dir / "assets" / asset.filename
+
+    try:
+        meta: dict[str, Any] | None = _read_host_meta(host_dir)
+    except (OSError, json.JSONDecodeError):
+        meta = None
+
+    if dest.is_file():
+        on_disk = dest.read_bytes()
+        if meta is not None and meta.get("wallpaper_asset_filename") == asset.filename:
+            stored_hash = meta.get("wallpaper_asset_hash")
+            if stored_hash is not None and hashlib.sha256(on_disk).hexdigest() != stored_hash:
+                logger.warning(
+                    "%s doesn't match what generate last wrote there (likely a hand-edit) -- "
+                    "this regeneration will overwrite it.",
+                    dest,
+                )
+        if on_disk == asset.data:
+            return
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(asset.data)
+
+    if meta is not None:
+        meta["wallpaper_asset_filename"] = asset.filename
+        meta["wallpaper_asset_hash"] = hashlib.sha256(asset.data).hexdigest()
+        (host_dir / _META_FILENAME).write_text(json.dumps(meta, indent=2))
 
 
 def _regenerate_host_imports(output_dir: Path, hostname: str) -> None:
@@ -171,8 +210,10 @@ def generate_all(system_state: SystemState, output_dir: Path, hostname: str, dom
 
     if "preferences" in domains:
         if system_state.preferences is not None and system_state.system is not None:
-            rendered = generate_preferences(system_state)
-            (host_dir / "preferences.nix").write_text(rendered)
+            generated = generate_preferences(system_state)
+            (host_dir / "preferences.nix").write_text(generated.rendered)
+            if generated.asset is not None:
+                _write_wallpaper_asset(host_dir, generated.asset)
             ran.add("preferences")
         else:
             skipped["preferences"] = "not scanned"

@@ -38,11 +38,11 @@ def _realistic_state() -> SystemState:
     sleep key, not just an unmapped one -- a real `nix build` failure caught
     power.sleep.* needing `null | positive-int | "never"`, not a raw scanned
     string, so this fixture must actually exercise that coercion path),
-    CUSTOM_PREFS (symbolichotkeys-shaped), ACTIVATION_SCRIPT (wallpaper), and
-    non-skipped MANUAL_REPORT entries (an unmapped pmset key, plus the two
-    hardware-dependent power/networking keys that a real `nix_vm` test
-    failure proved unsafe to auto-apply -- see preferences.py's
-    `_POWER_HARDWARE_DEPENDENT_NIX_PATHS`).
+    CUSTOM_PREFS (symbolichotkeys-shaped), ACTIVATION_SCRIPT (wallpaper, the
+    two hardware-dependent power/networking keys Step 14 renders as their
+    own self-guarding `systemsetup`-probing scripts instead of a native
+    assignment, and `hibernatemode`, one of Step 13's promoted `pmset -a`
+    cases), and a genuinely-unmapped pmset key that stays MANUAL_REPORT.
     """
     domains = [
         PreferencesDomain(domain_name="com.apple.dock", keys={"tilesize": 48}),
@@ -56,9 +56,10 @@ def _realistic_state() -> SystemState:
         power_settings={
             "ac_power.sleep": "0",  # POWER_SETTING_MAP-mapped -> power.sleep.computer ("never")
             "battery_power.displaysleep": "10",  # POWER_SETTING_MAP-mapped -> power.sleep.display (int)
-            "ac_power.womp": "1",  # -> networking.wakeOnLan.enable (MANUAL_REPORT, hardware-dependent)
-            "ac_power.autorestart": "0",  # -> power.restartAfterPowerFailure (MANUAL_REPORT, hardware-dependent)
-            "ac_power.hibernatemode": "3",  # not in POWER_SETTING_MAP -> MANUAL_REPORT
+            "ac_power.womp": "1",  # -> networking.wakeOnLan.enable (ACTIVATION_SCRIPT, hardware-dependent)
+            "ac_power.autorestart": "0",  # -> power.restartAfterPowerFailure (ACTIVATION_SCRIPT, hardware-dependent)
+            "ac_power.hibernatemode": "3",  # promoted (Step 13) -> ACTIVATION_SCRIPT via `pmset -a`
+            "ac_power.gpuswitch": "2",  # not in POWER_SETTING_MAP or promoted -> MANUAL_REPORT
         },
         wallpaper_path=Path("/System/Library/Desktop Pictures/The Cliffs.heic"),
     )
@@ -71,7 +72,7 @@ def _realistic_state() -> SystemState:
     )
 
 
-def test_generate_builds_for_real(tmp_path: Path) -> None:
+def test_generate_with_hardware_dependent_settings_builds_for_real(tmp_path: Path) -> None:
     output_dir = tmp_path / "mac2nix-scaffold"
     username = getpass.getuser()
     token_args = _nix_extra_access_tokens_args()
@@ -82,7 +83,21 @@ def test_generate_builds_for_real(tmp_path: Path) -> None:
 
     result = generate_all(_realistic_state(), output_dir, _HOSTNAME, {"preferences"})
     assert result.ran == {"preferences"}
-    assert (output_dir / "hosts" / "darwin" / _HOSTNAME / "preferences.nix").is_file()
+    preferences_path = output_dir / "hosts" / "darwin" / _HOSTNAME / "preferences.nix"
+    assert preferences_path.is_file()
+
+    # Step 14's two hardware-dependent activation scripts, plus Step 13's
+    # promoted hibernatemode case, must actually be part of what gets built
+    # below -- not silently dropped before this point. All three combine
+    # into the single real `postActivation` hook nix-darwin's own
+    # activation-scripts.nix module actually concatenates and executes; an
+    # arbitrary custom activationScripts key (e.g. "mac2nixWallpaper") is
+    # valid Nix and builds successfully but is silently never run.
+    rendered = preferences_path.read_text()
+    assert "system.activationScripts.postActivation.text" in rendered
+    assert "restart-after-power-failure" in rendered
+    assert "wake-on-LAN" in rendered
+    assert "pmset -a hibernatemode" in rendered
 
     lock_result = subprocess.run(  # noqa: S603
         ["nix", "flake", "lock", *token_args],  # noqa: S607
