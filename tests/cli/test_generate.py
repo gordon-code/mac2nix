@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from click.testing import CliRunner
 
 from mac2nix.cli import main
+from mac2nix.generators import GenerateResult
 from mac2nix.generators.scaffold import init_framework
 from mac2nix.models.preferences import PreferencesDomain, PreferencesResult
 from mac2nix.models.system import SystemConfig
@@ -235,3 +236,65 @@ class TestGenerateCommand:
         assert result.exc_info is not None
         assert result.exc_info[0] is SystemExit
         assert "sentinel" in result.output
+
+    def test_skipped_domain_prints_reason(self, tmp_path: Path) -> None:
+        """Mirrors test_generate_all.py::test_missing_system_domain_skips_preferences,
+        but asserts on the CLI's own echo formatting for result.skipped (cli.py:477-478),
+        which had no coverage at the CLI layer.
+        """
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+        _register_fake_host(output_dir, "myhost")
+        scan_file = tmp_path / "scan.json"
+        domains = [PreferencesDomain(domain_name="com.apple.dock", keys={"tilesize": 48})]
+        state = SystemState(
+            hostname="h",
+            macos_version="26.0",
+            architecture="arm64",
+            preferences=PreferencesResult(domains=domains),
+            system=None,
+        )
+        state.to_json(scan_file)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["generate", str(output_dir), "--hostname", "myhost", "--scan-file", str(scan_file)],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Skipped preferences: not scanned" in result.output
+        assert "Generated:" not in result.output
+        assert not (output_dir / "hosts" / "darwin" / "myhost" / "preferences.nix").exists()
+
+    def test_unrecognized_domain_prints_when_reported_by_generate_all(self, tmp_path: Path) -> None:
+        """result.unrecognized is always empty for a real CLI call today -- the CLI's own
+        _ALLOWED_DOMAINS membership check (cli.py:450-453) rejects any non-'preferences'
+        domain before generate_all() ever runs, per GenerateResult's own docstring. The
+        echo branch at cli.py:479-480 is otherwise unreachable from a real invocation, so
+        this patches generate_all() directly to simulate a future domain that's allowed by
+        the CLI but not yet handled by generate_all()'s own if-block (mirrors
+        test_generate_all.py::test_unrecognized_domain_returns_without_raising at the
+        generate_all() unit level).
+        """
+        output_dir = tmp_path / "repo"
+        init_framework(output_dir)
+        _register_fake_host(output_dir, "myhost")
+        scan_file = tmp_path / "scan.json"
+        _write_scan_file(scan_file)
+
+        fake_result = GenerateResult(
+            ran=set(),
+            skipped={},
+            unrecognized=frozenset({"future_domain"}),
+            homebrew_audit_manifest=None,
+        )
+        with patch("mac2nix.cli.generate_all", return_value=fake_result):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                ["generate", str(output_dir), "--hostname", "myhost", "--scan-file", str(scan_file)],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Unrecognized (not generated): future_domain" in result.output
