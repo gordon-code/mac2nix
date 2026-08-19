@@ -213,9 +213,16 @@ class Validator:
     # maintainer-only), the default trusts a third-party repository they do
     # not control. Sandboxing the VM limits the blast radius to that VM's
     # own lifetime — it does not prevent exfiltration during that lifetime.
-    # TODO: once a tagged release exists on gordon-code/mac2nix (post-merge of
-    # this PR), pin this default to that tag
-    # (`github:gordon-code/mac2nix?ref=vX.Y.Z`) instead of a floating branch ref.
+    # POST-MERGE TODO (decided, not optional — do this immediately after this
+    # PR merges, do not wait for a tagged release): pin this default to the
+    # merge commit's own SHA, not a future tag. Run:
+    #   git log -1 --format=%H origin/main   # (or the actual merge commit)
+    # and update the line below to:
+    #   _DEFAULT_MAC2NIX_SOURCE = "github:gordon-code/mac2nix?rev=<merge-sha>"
+    # This eliminates the floating-`main`-HEAD trust window addressed by the
+    # SECURITY comment above without waiting for a formal release tag. The SHA
+    # cannot be known while this PR is still open (it is only assigned once
+    # the merge commit itself is created), which is why it is not set here.
     # Meanwhile, the only real mitigation is `--mac2nix-source` (a local
     # checkout, or any other flake ref/rev/tag) to opt out of the default.
     _DEFAULT_MAC2NIX_SOURCE = "github:gordon-code/mac2nix"

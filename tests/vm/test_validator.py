@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -499,7 +500,7 @@ class TestValidatorCopyFlake:
 
 
 class TestScanVMSourceSelection:
-    def test_default_source_runs_published_flake_without_extra_copy(self) -> None:
+    def test_default_source_runs_published_flake_without_extra_copy(self, caplog: pytest.LogCaptureFixture) -> None:
         """Default mac2nix_source runs the GitHub flake directly — regression check
         that today's `mac2nix validate` behavior (no local-source SCP) is unchanged."""
         vm = _make_vm(exec_result=(True, "", ""))
@@ -520,13 +521,19 @@ class TestScanVMSourceSelection:
             ):
                 return await v._scan_vm()
 
-        result = asyncio.run(_run())
+        with caplog.at_level(logging.WARNING, logger="mac2nix.vm.validator"):
+            result = asyncio.run(_run())
         assert result is vm_state
         # Only the `nix run` scan invocation — no mkdir/scp for a source copy.
         assert len(exec_calls) == 1
         nix_run_cmd = exec_calls[0]
         joined = nix_run_cmd[2]
         assert f"nix run {Validator._DEFAULT_MAC2NIX_SOURCE} --" in joined
+        # The unpinned-default supply-chain disclosure must surface as a
+        # visible warning, not only under verbose/debug logging.
+        assert any(
+            r.levelno == logging.WARNING and "unpinned default mac2nix source" in r.message for r in caplog.records
+        )
         assert Validator._REMOTE_SOURCE_DIR not in joined
 
     def test_local_source_triggers_scp_and_runs_from_remote_source_dir(self, tmp_path: Path) -> None:
