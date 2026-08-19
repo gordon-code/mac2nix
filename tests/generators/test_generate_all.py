@@ -135,6 +135,40 @@ class TestGenerateAll:
         # sentinel-parsing failure must have that file survive on disk.
         assert (host_dir / "preferences.nix").exists()
 
+    def test_missing_configuration_nix_raises_clear_generate_error(self, tmp_path: Path) -> None:
+        """A registered host whose configuration.nix was deleted must raise a
+        purpose-written GenerateError, not a raw `FileNotFoundError`.
+        """
+        output_dir = tmp_path / "repo"
+        host_dir = _register_fake_host(output_dir, "myhost")
+        config_path = host_dir / "configuration.nix"
+        config_path.unlink()
+
+        with pytest.raises(GenerateError, match="is missing or is not a regular file"):
+            generate_all(_full_state(), output_dir, "myhost", {"preferences"})
+
+        # generate_all()'s documented partial-failure guarantee: a domain
+        # generator that already ran and wrote its file before the later
+        # missing-configuration.nix failure must have that file survive on disk.
+        assert (host_dir / "preferences.nix").exists()
+
+    def test_configuration_nix_replaced_with_directory_raises_clear_generate_error(self, tmp_path: Path) -> None:
+        """A registered host whose configuration.nix was replaced with a directory
+        must raise the same purpose-written GenerateError, not a raw
+        `IsADirectoryError` -- `is_file()` is False for both this and the
+        deleted-file case, so both must be guarded identically.
+        """
+        output_dir = tmp_path / "repo"
+        host_dir = _register_fake_host(output_dir, "myhost")
+        config_path = host_dir / "configuration.nix"
+        config_path.unlink()
+        config_path.mkdir()
+
+        with pytest.raises(GenerateError, match="is missing or is not a regular file"):
+            generate_all(_full_state(), output_dir, "myhost", {"preferences"})
+
+        assert (host_dir / "preferences.nix").exists()
+
     def test_corrupt_meta_file_handled_gracefully(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """A hand-corrupted `.mac2nix-meta.json` must not crash generate_all() or
         spuriously warn -- mirrors test_scaffold.py's

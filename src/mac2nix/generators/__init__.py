@@ -4,7 +4,8 @@ actual on-disk file existence.
 
 Scoped to the `preferences` domain in this PR. Tasks 7 (shell) and 6
 (homebrew) each extend this module with one more sibling `if` block and one
-more `(filename, import_line)` pair -- never restructuring the mechanism.
+more `(domain, filename, import_line)` triple -- never restructuring the
+mechanism.
 """
 
 from __future__ import annotations
@@ -53,10 +54,14 @@ _META_FILENAME = ".mac2nix-meta.json"
 _GENERATE_BEGIN = "# MAC2NIX:GENERATE:BEGIN"
 _GENERATE_END = "# MAC2NIX:GENERATE:END"
 
-# (filename, import_line) pairs, checked via on-disk existence -- extended by
-# Task 7 (shell.nix) and Task 6 (homebrew-packages.nix), never restructured.
-_GENERATED_IMPORT_FILES: list[tuple[str, str]] = [
-    ("preferences.nix", "./preferences.nix"),
+# (domain, filename, import_line) triples -- `domain` is this module's single
+# source of truth for "which domains actually run" (drives both the
+# unrecognized-domain check and the on-disk import regeneration below).
+# Extended by Task 7 (adds ("shell", "shell.nix", "./shell.nix")) and Task 6
+# (adds ("homebrew", "homebrew-packages.nix", "./homebrew-packages.nix")),
+# never restructured.
+_GENERATED_IMPORT_FILES: list[tuple[str, str, str]] = [
+    ("preferences", "preferences.nix", "./preferences.nix"),
 ]
 
 
@@ -96,9 +101,19 @@ def _regenerate_host_imports(output_dir: Path, hostname: str) -> None:
     this specific `generate_all()` invocation. This is what makes `generate`
     safely repeatable with a narrower `--domains` subset: an already-present,
     untouched file is never dropped from the imports list.
+
+    Raises :exc:`GenerateError` if configuration.nix is missing or is not a
+    regular file, or if it's missing its sentinel markers.
     """
     host_dir = output_dir / "hosts" / "darwin" / hostname
     config_path = host_dir / "configuration.nix"
+    if not config_path.is_file():
+        msg = (
+            f"{config_path} is missing or is not a regular file -- the host directory is "
+            "registered but its configuration.nix isn't usable; restore it (see "
+            "templates/scaffold/hosts/darwin/configuration.nix) before running generate again"
+        )
+        raise GenerateError(msg)
     content = config_path.read_text()
 
     # Anchor to the end of the BEGIN sentinel's own line -- it also carries a
@@ -118,7 +133,7 @@ def _regenerate_host_imports(output_dir: Path, hostname: str) -> None:
     old_inner = content[begin_marker_end:end_marker_start]
 
     present_imports = [
-        import_line for filename, import_line in _GENERATED_IMPORT_FILES if (host_dir / filename).exists()
+        import_line for _domain, filename, import_line in _GENERATED_IMPORT_FILES if (host_dir / filename).exists()
     ]
     new_inner = f"  imports = [ {' '.join(present_imports)} ];\n  " if present_imports else "  "
 
@@ -162,12 +177,8 @@ def generate_all(system_state: SystemState, output_dir: Path, hostname: str, dom
         else:
             skipped["preferences"] = "not scanned"
 
-    # Extend this literal set (never restructure the mechanism) whenever a new
-    # sibling `if` block is added above -- Task 7 (shell) widens this to
-    # {"preferences", "shell"}, then Task 6 (homebrew) to
-    # {"preferences", "shell", "homebrew"}. Forgetting this line makes a
-    # newly-supported domain wrongly report as `unrecognized`.
-    unrecognized = domains - {"preferences"}
+    known_domains = {domain for domain, _filename, _import_line in _GENERATED_IMPORT_FILES}
+    unrecognized = domains - known_domains
 
     _regenerate_host_imports(output_dir, hostname)
 
