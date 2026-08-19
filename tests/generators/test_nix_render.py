@@ -13,11 +13,13 @@ import pytest
 from mac2nix.generators._nix_render import (
     nix_comment,
     nix_mkdefault,
+    nix_post_activation_script,
     nix_string,
     python_to_nix,
     render_template,
     setup_jinja_env,
 )
+from tests._generate_helpers import assert_activation_script_neutralizes_shell_metacharacters
 
 _BACKSLASH = chr(92)
 _DQUOTE = chr(34)
@@ -89,6 +91,30 @@ def test_nix_mkdefault_wraps_expression() -> None:
     assert nix_mkdefault("true") == "lib.mkDefault true"
 
 
+def test_nix_post_activation_script_wraps_bodies_in_concat_list() -> None:
+    """Deliberately NOT `lib.mkDefault`-wrapped -- confirmed via a real built
+    system derivation that home-manager's own nix-darwin integration sets
+    this exact option with a plain (higher-precedence) assignment, which
+    would silently discard an `mkDefault`-priority definition entirely
+    rather than merge with it.
+    """
+    rendered = nix_post_activation_script(["''\n  echo hi\n''"])
+    assert rendered == (
+        "system.activationScripts.postActivation.text = (\n"
+        '  lib.concatStringsSep "\\n" [\n'
+        "    (''\n  echo hi\n'')\n"
+        "  ]\n"
+        ");"
+    )
+    assert "mkDefault" not in rendered
+
+
+def test_nix_post_activation_script_combines_multiple_bodies() -> None:
+    rendered = nix_post_activation_script(["''one''", "''two''"])
+    assert "(''one'')" in rendered
+    assert "(''two'')" in rendered
+
+
 def test_nix_comment_replaces_newline_variants_with_space() -> None:
     assert nix_comment("a\nb") == "a b"
     assert nix_comment("a\r\nb") == "a b"
@@ -115,6 +141,15 @@ def test_render_template_delegates_to_environment() -> None:
     loader = jinja2.DictLoader({"fixture.nix.j2": "<< value|nix_str >>"})
     result = render_template("fixture.nix.j2", {"value": "hi"}, loader=loader)
     assert result == '"hi"'
+
+
+@pytest.mark.nix
+def test_nix_post_activation_script_adversarial_value_stays_quoted(tmp_path: Path) -> None:
+    marker = 'inject`ed $(rm -rf /) ; "quoted"\nnewline'
+    body = f"let\n  wallpaperPath = {nix_string(marker)};\nin\n''\n  ${{lib.escapeShellArg wallpaperPath}}\n''"
+    rendered = nix_post_activation_script([body])
+
+    assert_activation_script_neutralizes_shell_metacharacters(rendered, marker, tmp_path)
 
 
 @pytest.fixture
