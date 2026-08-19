@@ -201,7 +201,7 @@ def _classify_preference_precheck(
         # what generators surface into real, on-disk output.
         return ClassificationResult(
             tier=ClassificationTier.MANUAL_REPORT,
-            destination=f"manual report: key '***REDACTED***' in domain '{domain.domain_name}' "
+            destination=f"[sensitive] manual report: key '***REDACTED***' in domain '{domain.domain_name}' "
             "matches a sensitive pattern",
             metadata={
                 "potentially_sensitive": True,
@@ -499,7 +499,7 @@ def classify_system_setting(field_name: str, value: Any) -> ClassificationResult
     if nix_path is None:
         return ClassificationResult(
             tier=ClassificationTier.MANUAL_REPORT,
-            destination=f"manual report: no nix-darwin option for system setting '{field_name}'",
+            destination=f"[coverage gap] manual report: no nix-darwin option for system setting '{field_name}'",
             metadata={"field_name": field_name, "value": value},
         )
     return ClassificationResult(
@@ -537,7 +537,14 @@ def classify_wallpaper(path: Path) -> ClassificationResult:
     removed `{pre,post}UserActivation` -- all activation now runs as root, so
     a generator targeting this destination must wrap any user-context
     command (e.g. `osascript` talking to the logged-in user's WindowServer
-    session) in `sudo -u ${config.system.primaryUser}` itself.
+    session) in `sudo -u ${config.system.primaryUser}` itself. It's also not
+    a custom `mac2nixWallpaper`-style key: nix-darwin's own
+    activation-scripts.nix module only ever concatenates a fixed, hardcoded
+    set of named entries into the script `darwin-rebuild switch` actually
+    runs -- an arbitrary custom key evaluates and builds fine but is
+    silently never executed (confirmed via a real Tart-VM switch and
+    nix-darwin's own GitHub issue #663). `postActivation` is one of the few
+    real hook points.
     """
     return ClassificationResult(
         tier=ClassificationTier.ACTIVATION_SCRIPT,

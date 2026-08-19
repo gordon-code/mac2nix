@@ -497,6 +497,26 @@ class TestClassifySystemSetting:
         assert result.nix_path == "time.timeZone"
 
 
+class TestManualReportCategoryTags:
+    """Each MANUAL_REPORT destination is prefixed with a short category tag at
+    the point it's constructed, reflecting *why* it's manual: `[sensitive]`
+    (deliberately never captured), `[coverage gap]` (no nix-darwin mapping
+    exists yet). Constructed here, not via post-hoc string matching in a
+    generator, which would be fragile.
+    """
+
+    def test_manual_report_category_sensitive_key_is_tagged(self) -> None:
+        domain = _domain("com.example.someapp", {"API_TOKEN": "sk-live-abc123"})
+        result = classify_preference(domain, "API_TOKEN", "sk-live-abc123")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.destination.startswith("[sensitive] ")
+
+    def test_manual_report_category_unmapped_system_setting_is_tagged(self) -> None:
+        result = classify_system_setting("hibernatemode", "3")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.destination.startswith("[coverage gap] ")
+
+
 class TestClassifySecuritySetting:
     def test_known_security_field_routes_to_native(self) -> None:
         result = classify_security_setting("firewall_enabled", True)
