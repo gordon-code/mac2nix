@@ -79,7 +79,7 @@ class SystemScanner(BaseScannerPlugin):
         system_extensions = self._detect_system_extensions()
         icloud = self._detect_icloud()
         mdm_enrolled = self._detect_mdm()
-        wallpaper_path = self._get_wallpaper_path()
+        wallpaper_path, wallpaper_scan_error = self._get_wallpaper_path()
 
         return SystemConfig(
             hostname=hostname,
@@ -113,6 +113,7 @@ class SystemScanner(BaseScannerPlugin):
             icloud=icloud,
             mdm_enrolled=mdm_enrolled,
             wallpaper_path=wallpaper_path,
+            wallpaper_scan_error=wallpaper_scan_error,
         )
 
     def _get_computer_name(self) -> str | None:
@@ -572,14 +573,17 @@ class SystemScanner(BaseScannerPlugin):
             documents_sync=documents_sync,
         )
 
-    def _get_wallpaper_path(self) -> Path | None:
+    def _get_wallpaper_path(self) -> tuple[Path | None, str | None]:
         """Read the current desktop wallpaper path from desktoppicture.db.
 
         macOS stores the desktop picture in a SQLite database, not a plist --
         the general preferences scanner structurally cannot see it. Never
         raises: a missing file, corrupt database, or schema mismatch all
-        resolve to `None`, consistent with every other best-effort scanner
-        capability in this file.
+        resolve to a `None` path. Returns `(path, scan_error)` -- `scan_error`
+        is populated only for a genuine read/schema failure (something is
+        actually wrong); a legitimate "no wallpaper row found" result (the
+        query ran fine, there's just no picture set) leaves it `None`. These
+        are NOT the same case and must stay distinguishable downstream.
         """
         db_path = Path.home() / "Library" / "Application Support" / "Dock" / "desktoppicture.db"
         try:
@@ -594,7 +598,7 @@ class SystemScanner(BaseScannerPlugin):
                 row = conn.execute(_WALLPAPER_QUERY).fetchone()
         except (sqlite3.Error, OSError) as exc:
             logger.debug("Could not read desktop wallpaper from %s: %s", db_path, exc)
-            return None
+            return None, f"could not read {db_path.name} ({exc})"
 
         if not row or not row[0]:
             logger.debug(
@@ -602,9 +606,9 @@ class SystemScanner(BaseScannerPlugin):
                 "'preferences' row with key=1 pointing to an absolute-path 'data' "
                 "value) -- wallpaper_path will be unset"
             )
-            return None
+            return None, None
 
-        return Path(row[0])
+        return Path(row[0]), None
 
     def _detect_mdm(self) -> bool | None:
         """Check if device is MDM enrolled."""

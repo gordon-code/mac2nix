@@ -117,3 +117,4 @@ class SystemConfig(BaseModel):
     icloud: ICloudState = Field(default_factory=ICloudState)
     mdm_enrolled: bool | None = None
     wallpaper_path: Path | None = None
+    wallpaper_scan_error: str | None = None
