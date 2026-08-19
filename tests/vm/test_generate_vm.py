@@ -124,9 +124,27 @@ def test_generate_switches_and_matches_scan(
         if not ok:
             raise VMError(f"nix-darwin switch failed:\nstdout:\n{out}\nstderr:\n{err}")
 
-        return await _retry_transient(validator._scan_vm)
+        return await _retry_transient(validator._scan_vm), err
 
-    vm_state = asyncio.run(_run())
+    vm_state, switch_err = asyncio.run(_run())
+
+    # Step 14 regression test: this PR's own UAT already found once, for
+    # real, that nix-darwin's native `power.restartAfterPowerFailure`
+    # option aborts the ENTIRE `darwin-rebuild switch` on hardware (this
+    # same Tart VM) that reports the feature as unsupported -- that's
+    # exactly why this task originally downgraded it to a manual-report
+    # comment. The switch above already completed successfully (or this
+    # test would have raised VMError before reaching this point) -- the
+    # self-guarding activation script's own probe-then-skip message must
+    # be what actually fired, not a lucky coincidence, since restart-
+    # after-power-failure is confirmed unsupported on this VM. Written to
+    # a file rather than relying on pytest's own truncated assertion diff
+    # for a multi-KB string -- a real prior run's failure message elided
+    # the middle of this exact string, which cost real debugging time.
+    (tmp_path / "switch_stderr.log").write_text(switch_err)
+    assert "mac2nix: restart-after-power-failure not supported on this hardware, skipped" in switch_err, (
+        f"full stderr written to {tmp_path / 'switch_stderr.log'}"
+    )
 
     # compute_fidelity() scores PreferencesResult.domains as a single list --
     # unhashable PreferencesDomain items fall back to a whole-list string
