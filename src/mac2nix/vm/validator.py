@@ -191,12 +191,61 @@ class Validator:
 
     # Default preserves today's `mac2nix validate` CLI behavior exactly — only
     # this plan's own nix_vm tests pass a local checkout path instead.
+    #
+    # SECURITY: intentionally unpinned (no ?ref=/?rev=). `nix run` resolves this
+    # to whatever upstream/main's HEAD is at call time and executes it inside the
+    # Tart VM. This is a known, deliberate gap, not an oversight — it cannot be
+    # fixed by hardcoding a commit SHA here: `upstream/main` has no flake.nix at
+    # all today (this PR's own root flake.nix is the first commit that will ever
+    # add one), so pinning to any commit that exists right now would make
+    # `nix run` fail immediately with "not part of a flake". There are also no
+    # tags/releases on gordon-code/mac2nix yet to pin to instead.
+    #
+    # This is NOT fully mitigated. The VM is not network-isolated (see
+    # TartVMManager's DNS setup) and, for a real `validate()` call,
+    # `_copy_flake_to_vm(flake_path, exclude=_USER_FLAKE_EXCLUDE)` already
+    # copies the caller's real flake into the same VM *before* this unpinned
+    # source ever runs there — so a compromised upstream `main` would have
+    # both read access to that flake and outbound network access to
+    # exfiltrate it. "The user owns the upstream repo" only holds for the
+    # mac2nix maintainer; for any other user of `mac2nix validate` (this
+    # tool is designed to be generic, portable boilerplate, not
+    # maintainer-only), the default trusts a third-party repository they do
+    # not control. Sandboxing the VM limits the blast radius to that VM's
+    # own lifetime — it does not prevent exfiltration during that lifetime.
+    # POST-MERGE TODO (decided, not optional — do this immediately after this
+    # PR merges, do not wait for a tagged release): pin this default to the
+    # merge commit's own SHA, not a future tag. Run:
+    #   git log -1 --format=%H origin/main   # (or the actual merge commit)
+    # and update the line below to:
+    #   _DEFAULT_MAC2NIX_SOURCE = "github:gordon-code/mac2nix?rev=<merge-sha>"
+    # This eliminates the floating-`main`-HEAD trust window addressed by the
+    # SECURITY comment above without waiting for a formal release tag. The SHA
+    # cannot be known while this PR is still open (it is only assigned once
+    # the merge commit itself is created), which is why it is not set here.
+    # Meanwhile, the only real mitigation is `--mac2nix-source` (a local
+    # checkout, or any other flake ref/rev/tag) to opt out of the default.
     _DEFAULT_MAC2NIX_SOURCE = "github:gordon-code/mac2nix"
 
     # Directories excluded when SCPing a local mac2nix checkout into the VM —
-    # dev-machine-only content (VCS history, secrets, scan data, project memory)
-    # that has no bearing on the package being scanned from inside the VM.
-    _LOCAL_SOURCE_EXCLUDE = frozenset({".git", ".env", "data", "hack"})
+    # dev-machine-only content (VCS history, secrets, scan data, project memory,
+    # a local dev venv/cache that can be tens to hundreds of MB) that has no
+    # bearing on the package being scanned from inside the VM. Scoped to
+    # *this project's own* directory conventions ("data", "hack") -- do not
+    # reuse for an arbitrary caller-owned flake (see _USER_FLAKE_EXCLUDE
+    # below), since a real nix-darwin flake could legitimately have a
+    # top-level directory with either of those names that nix-darwin
+    # actually needs to build/switch.
+    _LOCAL_SOURCE_EXCLUDE = frozenset({".git", ".env", "data", "hack", ".cache"})
+
+    # Directories excluded when SCPing the *caller's* flake into the VM for
+    # `validate()` -- deliberately narrower than _LOCAL_SOURCE_EXCLUDE above.
+    # Only VCS history and secrets are universally unsafe/unneeded regardless
+    # of what any given nix-darwin flake is structured like; "data"/"hack"
+    # are this project's own conventions, not a general flake convention, so
+    # excluding them here could silently drop content nix-darwin actually
+    # needs from someone else's real flake.
+    _USER_FLAKE_EXCLUDE = frozenset({".git", ".env"})
 
     def __init__(self, vm: TartVMManager, mac2nix_source: str = _DEFAULT_MAC2NIX_SOURCE) -> None:
         self._vm = vm
@@ -212,7 +261,18 @@ class Validator:
         build_output = ""
 
         try:
-            await self._copy_flake_to_vm(flake_path)
+            # Exclude VCS history/secrets -- the caller's real flake directory
+            # can contain .git (full history, sometimes with secrets
+            # committed before later encryption) and .env, neither of which
+            # nix-darwin needs to build/switch. Without this, a compromised
+            # unpinned _scan_vm() re-scan (see the SECURITY comment on
+            # _DEFAULT_MAC2NIX_SOURCE below) would have both read access to
+            # this content inside the VM and outbound network access (see
+            # TartVMManager's DNS setup) to exfiltrate it. Uses the narrower
+            # _USER_FLAKE_EXCLUDE, not _LOCAL_SOURCE_EXCLUDE -- this is an
+            # arbitrary caller-owned flake, not mac2nix's own dev tree, so
+            # only universally-unsafe names are excluded here.
+            await self._copy_flake_to_vm(flake_path, exclude=self._USER_FLAKE_EXCLUDE)
         except VMError as exc:
             errors.append(f"copy_flake failed: {exc}")
             return ValidationResult(success=False, fidelity=None, build_output="", errors=errors)
@@ -399,6 +459,17 @@ class Validator:
 
         if self._mac2nix_source == self._DEFAULT_MAC2NIX_SOURCE:
             run_target = self._mac2nix_source
+            # WARNING (not debug): this is a real supply-chain disclosure the
+            # caller should see by default, not only under verbose logging --
+            # see the SECURITY comment on _DEFAULT_MAC2NIX_SOURCE.
+            logger.warning(
+                "Using unpinned default mac2nix source %r — resolves to "
+                "upstream main's current HEAD at nix-run time and has already "
+                "received the caller's flake contents in this same VM; "
+                "override with --mac2nix-source to pin a specific rev/tag "
+                "once one exists",
+                run_target,
+            )
         else:
             await self._copy_flake_to_vm(
                 Path(self._mac2nix_source),

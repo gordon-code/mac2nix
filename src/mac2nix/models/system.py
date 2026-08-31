@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -115,3 +116,5 @@ class SystemConfig(BaseModel):
     system_extensions: list[SystemExtension] = []
     icloud: ICloudState = Field(default_factory=ICloudState)
     mdm_enrolled: bool | None = None
+    wallpaper_path: Path | None = None
+    wallpaper_scan_error: str | None = None
