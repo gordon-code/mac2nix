@@ -80,7 +80,7 @@ hooks = [
 
 [[repos]]
 repo = "https://github.com/rhysd/actionlint"
-rev = "v1.7.11"
+rev = "v1.7.12"
 hooks = [
   {
     id = "actionlint",
@@ -91,7 +91,7 @@ hooks = [
 
 [[repos]]
 repo = "https://github.com/trufflesecurity/trufflehog"
-rev = "v3.93.4"
+rev = "v3.97.1"
 hooks = [
   {
     id = "trufflehog",
