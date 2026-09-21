@@ -1,12 +1,36 @@
 """Tests for system scanner."""
 
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 from mac2nix.models.system import SystemConfig
 from mac2nix.scanners.system_scanner import SystemScanner
+
+
+def _write_wallpaper_db(db_path: Path, rows: list[tuple[int, str]]) -> None:
+    """Build a fixture desktoppicture.db matching the real schema.
+
+    *rows* is a list of (preferences.key, data.value) pairs, inserted in
+    order -- later rows get higher ROWIDs, matching "most recently written
+    wins" real-world semantics.
+    """
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE data (value)")
+        conn.execute("CREATE TABLE preferences (key INTEGER, data_id INTEGER, picture_id INTEGER)")
+        for key, value in rows:
+            cursor = conn.execute("INSERT INTO data (value) VALUES (?)", (value,))
+            conn.execute(
+                "INSERT INTO preferences (key, data_id, picture_id) VALUES (?, ?, ?)",
+                (key, cursor.lastrowid, 1),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestSystemScanner:
@@ -897,3 +921,147 @@ class TestMDMDetection:
 
         assert isinstance(result, SystemConfig)
         assert result.mdm_enrolled is None
+
+
+class TestWallpaperDetection:
+    def _db_path(self, tmp_path: Path) -> Path:
+        return tmp_path / "Library" / "Application Support" / "Dock" / "desktoppicture.db"
+
+    def test_wallpaper_path_from_real_schema(self, tmp_path: Path) -> None:
+        db_path = self._db_path(tmp_path)
+        _write_wallpaper_db(db_path, [(1, "/System/Library/Desktop Pictures/The Cliffs.heic")])
+
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path):
+            path, error = SystemScanner()._get_wallpaper_path()
+
+        assert path == Path("/System/Library/Desktop Pictures/The Cliffs.heic")
+        assert error is None
+
+    def test_home_path_with_uri_reserved_characters_still_resolves(self, tmp_path: Path) -> None:
+        """A literal '?' or '#' in the path (e.g. an unusual macOS username) must not be
+        misparsed as the start of the file: URI's query string/fragment -- without
+        percent-encoding, sqlite3 would silently truncate the path there and either
+        fail to open the real db or open the wrong location.
+        """
+        home = tmp_path / "AC?DC#1"
+        home.mkdir()
+        db_path = home / "Library" / "Application Support" / "Dock" / "desktoppicture.db"
+        _write_wallpaper_db(db_path, [(1, "/System/Library/Desktop Pictures/The Cliffs.heic")])
+
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=home):
+            path, error = SystemScanner()._get_wallpaper_path()
+
+        assert path == Path("/System/Library/Desktop Pictures/The Cliffs.heic")
+        assert error is None
+
+    def test_most_recently_written_path_wins(self, tmp_path: Path) -> None:
+        db_path = self._db_path(tmp_path)
+        _write_wallpaper_db(
+            db_path,
+            [
+                (1, "/Library/Desktop Pictures/Pink Lotus Flower.jpg"),
+                (1, "/System/Library/Desktop Pictures/The Cliffs.heic"),
+            ],
+        )
+
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path):
+            path, error = SystemScanner()._get_wallpaper_path()
+
+        assert path == Path("/System/Library/Desktop Pictures/The Cliffs.heic")
+        assert error is None
+
+    def test_non_path_key_is_ignored(self, tmp_path: Path) -> None:
+        """key != 1 rows are non-path bookkeeping on real machines -- must never be selected."""
+        db_path = self._db_path(tmp_path)
+        _write_wallpaper_db(
+            db_path,
+            [
+                (1, "/System/Library/Desktop Pictures/The Cliffs.heic"),
+                (16, "F8DD5F35"),
+            ],
+        )
+
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path):
+            path, error = SystemScanner()._get_wallpaper_path()
+
+        assert path == Path("/System/Library/Desktop Pictures/The Cliffs.heic")
+        assert error is None
+
+    def test_missing_db_populates_scan_error(self, tmp_path: Path) -> None:
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path):
+            path, error = SystemScanner()._get_wallpaper_path()
+
+        assert path is None
+        assert error is not None
+
+    def test_corrupt_db_populates_scan_error(self, tmp_path: Path) -> None:
+        db_path = self._db_path(tmp_path)
+        db_path.parent.mkdir(parents=True)
+        db_path.write_bytes(b"not a sqlite database")
+
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path):
+            path, error = SystemScanner()._get_wallpaper_path()
+
+        assert path is None
+        assert error is not None
+
+    def test_wrong_schema_populates_scan_error(self, tmp_path: Path) -> None:
+        """A genuine schema-mismatch read failure -- distinct from a legitimate
+        zero-matching-rows result (test_no_matching_row_leaves_scan_error_none) --
+        must surface a non-None reason so a real problem isn't silently swallowed.
+        """
+        db_path = self._db_path(tmp_path)
+        db_path.parent.mkdir(parents=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE unrelated (foo)")
+        conn.commit()
+        conn.close()
+
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path):
+            path, error = SystemScanner()._get_wallpaper_path()
+
+        assert path is None
+        assert error is not None
+
+    def test_no_matching_row_leaves_scan_error_none(self, tmp_path: Path) -> None:
+        """Zero matching rows is a legitimate "no wallpaper set" outcome, not a
+        failure -- nothing is wrong here, so scan_error must stay None (distinct
+        from test_wrong_schema_populates_scan_error's genuine failure case).
+        """
+        db_path = self._db_path(tmp_path)
+        _write_wallpaper_db(db_path, [(16, "F8DD5F35")])
+
+        with patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path):
+            path, error = SystemScanner()._get_wallpaper_path()
+
+        assert path is None
+        assert error is None
+
+    def test_wallpaper_wired_into_scan(self, tmp_path: Path) -> None:
+        db_path = self._db_path(tmp_path)
+        _write_wallpaper_db(db_path, [(1, "/System/Library/Desktop Pictures/The Cliffs.heic")])
+
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path),
+        ):
+            result = SystemScanner().scan()
+
+        assert isinstance(result, SystemConfig)
+        assert result.wallpaper_path == Path("/System/Library/Desktop Pictures/The Cliffs.heic")
+        assert result.wallpaper_scan_error is None
+
+    def test_wallpaper_scan_error_wired_into_scan(self, tmp_path: Path) -> None:
+        db_path = self._db_path(tmp_path)
+        db_path.parent.mkdir(parents=True)
+        db_path.write_bytes(b"not a sqlite database")
+
+        with (
+            patch("mac2nix.scanners.system_scanner.run_command", return_value=None),
+            patch("mac2nix.scanners.system_scanner.Path.home", return_value=tmp_path),
+        ):
+            result = SystemScanner().scan()
+
+        assert isinstance(result, SystemConfig)
+        assert result.wallpaper_path is None
+        assert result.wallpaper_scan_error is not None

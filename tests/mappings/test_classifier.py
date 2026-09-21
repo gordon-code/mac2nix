@@ -15,6 +15,7 @@ from mac2nix.mappings.classifier import (
     classify_security_setting,
     classify_shell_setting,
     classify_system_setting,
+    classify_wallpaper,
 )
 from mac2nix.mappings.defaults_to_nix import get_nix_option
 from mac2nix.models.application import AppSource, BrewFormula, InstalledApp
@@ -126,6 +127,16 @@ class TestClassifyPreferenceSensitiveKeyRedaction:
         assert result.metadata is not None
         assert result.metadata["potentially_sensitive"] is True
         assert result.metadata["value"] == "***REDACTED***"
+
+    def test_sensitive_key_name_itself_is_redacted_in_destination(self) -> None:
+        """destination is what generators (e.g. preferences.py) surface into real,
+        on-disk output -- the secret can be embedded in the key itself, not just
+        the value, so `destination` must never leak the raw key name either.
+        """
+        domain = _domain("com.example.someapp", {"sk-live-abc123_TOKEN": "unused"})
+        result = classify_preference(domain, "sk-live-abc123_TOKEN", "unused")
+        assert "sk-live-abc123" not in result.destination
+        assert "***REDACTED***" in result.destination
 
     def test_sensitive_match_takes_priority_over_native_mapping(self) -> None:
         """A sensitive-looking key must never leak into Tier 1/2/3 even if otherwise mappable."""
@@ -486,6 +497,26 @@ class TestClassifySystemSetting:
         assert result.nix_path == "time.timeZone"
 
 
+class TestManualReportCategoryTags:
+    """Each MANUAL_REPORT destination is prefixed with a short category tag at
+    the point it's constructed, reflecting *why* it's manual: `[sensitive]`
+    (deliberately never captured), `[coverage gap]` (no nix-darwin mapping
+    exists yet). Constructed here, not via post-hoc string matching in a
+    generator, which would be fragile.
+    """
+
+    def test_manual_report_category_sensitive_key_is_tagged(self) -> None:
+        domain = _domain("com.example.someapp", {"API_TOKEN": "sk-live-abc123"})
+        result = classify_preference(domain, "API_TOKEN", "sk-live-abc123")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.destination.startswith("[sensitive] ")
+
+    def test_manual_report_category_unmapped_system_setting_is_tagged(self) -> None:
+        result = classify_system_setting("hibernatemode", "3")
+        assert result.tier == ClassificationTier.MANUAL_REPORT
+        assert result.destination.startswith("[coverage gap] ")
+
+
 class TestClassifySecuritySetting:
     def test_known_security_field_routes_to_native(self) -> None:
         result = classify_security_setting("firewall_enabled", True)
@@ -499,6 +530,17 @@ class TestClassifySecuritySetting:
     def test_sip_and_gatekeeper_are_always_manual(self) -> None:
         assert classify_security_setting("sip_enabled", True).tier == ClassificationTier.MANUAL_REPORT
         assert classify_security_setting("gatekeeper_enabled", True).tier == ClassificationTier.MANUAL_REPORT
+
+
+class TestClassifyWallpaper:
+    def test_routes_to_activation_script(self) -> None:
+        result = classify_wallpaper(Path("/System/Library/Desktop Pictures/The Cliffs.heic"))
+        assert result.tier == ClassificationTier.ACTIVATION_SCRIPT
+        assert result.destination == "system.activationScripts.postActivation"
+
+    def test_metadata_carries_only_structured_path_no_shell_command(self) -> None:
+        result = classify_wallpaper(Path("/System/Library/Desktop Pictures/The Cliffs.heic"))
+        assert result.metadata == {"wallpaper_path": "/System/Library/Desktop Pictures/The Cliffs.heic"}
 
 
 class TestClassifyNetworkSetting:
