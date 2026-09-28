@@ -195,9 +195,14 @@ def _classify_preference_precheck(
 ) -> ClassificationResult | None:
     """SEC-1/SEC-3 gating checks plus ephemeral-noise filtering, run before any tier routing."""
     if _contains_sensitive_pattern(key) or _value_contains_sensitive_pattern(value):
+        # The key name itself is redacted in `destination` (not just `value`)
+        # -- a secret is sometimes embedded in the key rather than the value
+        # (e.g. a literal API key used as a dict key), and `destination` is
+        # what generators surface into real, on-disk output.
         return ClassificationResult(
             tier=ClassificationTier.MANUAL_REPORT,
-            destination=f"manual report: key '{key}' in domain '{domain.domain_name}' matches a sensitive pattern",
+            destination=f"[sensitive] manual report: key '***REDACTED***' in domain '{domain.domain_name}' "
+            "matches a sensitive pattern",
             metadata={
                 "potentially_sensitive": True,
                 "reason": "key or value matches a sensitive pattern",
@@ -494,7 +499,7 @@ def classify_system_setting(field_name: str, value: Any) -> ClassificationResult
     if nix_path is None:
         return ClassificationResult(
             tier=ClassificationTier.MANUAL_REPORT,
-            destination=f"manual report: no nix-darwin option for system setting '{field_name}'",
+            destination=f"[coverage gap] manual report: no nix-darwin option for system setting '{field_name}'",
             metadata={"field_name": field_name, "value": value},
         )
     return ClassificationResult(
@@ -519,6 +524,32 @@ def classify_security_setting(field_name: str, value: Any) -> ClassificationResu
         destination=nix_path,
         nix_path=nix_path,
         metadata={"field_name": field_name, "value": value},
+    )
+
+
+def classify_wallpaper(path: Path) -> ClassificationResult:
+    """Classify the scanned desktop wallpaper path as a Tier 3 activation script.
+
+    No native nix-darwin option exists for the desktop picture. Metadata
+    carries only the structured path -- shell escaping is a generator concern.
+
+    Destination is `postActivation`, not `postUserActivation`: nix-darwin
+    removed `{pre,post}UserActivation` -- all activation now runs as root, so
+    a generator targeting this destination must wrap any user-context
+    command (e.g. `osascript` talking to the logged-in user's WindowServer
+    session) in `sudo -u ${config.system.primaryUser}` itself. It's also not
+    a custom `mac2nixWallpaper`-style key: nix-darwin's own
+    activation-scripts.nix module only ever concatenates a fixed, hardcoded
+    set of named entries into the script `darwin-rebuild switch` actually
+    runs -- an arbitrary custom key evaluates and builds fine but is
+    silently never executed (confirmed via a real Tart-VM switch and
+    nix-darwin's own GitHub issue #663). `postActivation` is one of the few
+    real hook points.
+    """
+    return ClassificationResult(
+        tier=ClassificationTier.ACTIVATION_SCRIPT,
+        destination="system.activationScripts.postActivation",
+        metadata={"wallpaper_path": str(path)},
     )
 
 

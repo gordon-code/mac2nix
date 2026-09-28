@@ -26,19 +26,21 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org/
 
 ### Scopes
 
-| Scope        | Description                        |
-|--------------|------------------------------------|
-| `cli`        | CLI commands and options           |
-| `scanners`   | macOS system scanners              |
-| `generators` | Nix configuration generators       |
-| `mappings`   | macOS-to-nix mapping tables        |
-| `models`     | Data models                        |
-| `reports`    | Scan reports and diffs             |
-| `templates`  | Jinja2 nix templates               |
-| `vm`         | Tart VM integration                |
-| `drift`      | Configuration drift detection      |
-| `deps`       | Dependency updates                 |
-| `ci`         | CI/CD pipeline                     |
+| Scope          | Description                         |
+|----------------|--------------------------------------|
+| `cli`          | CLI commands and options             |
+| `scanners`     | macOS system scanners                |
+| `generators`   | Nix configuration generators         |
+| `mappings`     | macOS-to-nix mapping tables          |
+| `models`       | Data models                          |
+| `reports`      | Scan reports and diffs               |
+| `templates`    | Jinja2 nix templates                 |
+| `vm`           | Tart VM integration                  |
+| `drift`        | Configuration drift detection        |
+| `deps`         | Dependency updates                   |
+| `ci`           | CI/CD pipeline                       |
+| `tests`        | Test-only infrastructure/helpers     |
+| `contributing` | Contributing guide and conventions   |
 
 ### Examples
 

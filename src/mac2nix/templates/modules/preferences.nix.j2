@@ -1,0 +1,19 @@
+{ config, lib, pkgs, ... }:
+
+{
+<% for item in native_items %>
+  << item.nix_path >> = << item.value|nix_value|mkdefault >>;
+<% endfor %>
+<% if custom_user_prefs %>
+  system.defaults.CustomUserPreferences = << custom_user_prefs|nix_value|mkdefault >>;
+<% endif %>
+<% if custom_system_prefs %>
+  system.defaults.CustomSystemPreferences = << custom_system_prefs|nix_value|mkdefault >>;
+<% endif %>
+<% if post_activation_script %>
+  << post_activation_script >>
+<% endif %>
+<% for comment in manual_report_comments %>
+  # not automated: << comment|nix_comment >>
+<% endfor %>
+}

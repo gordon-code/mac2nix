@@ -8,11 +8,48 @@ Generate nix-darwin configurations from macOS system scans.
 uv sync
 ```
 
+mac2nix also ships a minimal `flake.nix`, so it can be run via Nix without a
+local `uv` install (used internally to re-scan a VM during `mac2nix validate`):
+
+```sh
+nix run github:gordon-code/mac2nix -- --help
+```
+
 ## Usage
 
 ```sh
 uv run mac2nix --help
 ```
+
+### Migrating a Mac
+
+Scaffold a reusable, host-less nix-darwin + home-manager + sops-nix framework,
+register a machine, scan it, and generate that host's configuration:
+
+```sh
+uv run mac2nix init ~/my-nix-config
+uv run mac2nix add-host ~/my-nix-config --hostname my-mac --username myuser
+uv run mac2nix generate ~/my-nix-config --hostname my-mac
+```
+
+`init` runs once per framework (it scaffolds `flake.nix`, shared `modules/`,
+and sops-nix wiring with zero hosts registered). `add-host` registers one
+machine at a time — including the first — generating that host's own
+sops-nix age key behind a mandatory backup-confirmation prompt. `generate`
+scans the current machine (or replays a `mac2nix scan` JSON file via
+`--scan-file`) and writes that host's curated `preferences.nix` — bundling a
+personal desktop wallpaper image under that host's `assets/` directory when
+one is set — updating `configuration.nix`'s generated-imports section. It's
+safely re-runnable and supports `--domains` to select which domains to
+generate (currently just `preferences`; more are added incrementally).
+
+Anything `generate` can't apply automatically shows up as a `# not automated:`
+comment in the generated file, prefixed with why: `[sensitive]` (a value
+that's deliberately never captured), `[coverage gap]` (no nix-darwin option
+exists yet), `[hardware-dependent]` (the target machine's support for the
+setting can't be known until activation time), or `[out of scope]` (outside
+this generator's current scope). Review these and apply them manually where
+needed.
 
 ## License
 

@@ -17,7 +17,14 @@ import yaml
 
 from mac2nix.generators import Mac2NixError
 from mac2nix.generators import scaffold as scaffold_module
-from mac2nix.generators.scaffold import ScaffoldError, add_host, age_key_path, generate_age_key, init_framework
+from mac2nix.generators.scaffold import (
+    ScaffoldError,
+    add_host,
+    age_key_path,
+    generate_age_key,
+    has_hosts_sentinels,
+    init_framework,
+)
 from tests._scaffold_helpers import _has_add_host_crypto_deps, _has_age_keygen, _redirect_age_keys
 
 _EXPECTED_FRAMEWORK_FILES = [
@@ -143,6 +150,15 @@ class TestGenerateAgeKey:
 
 def test_age_key_path_matches_internal_construction() -> None:
     assert age_key_path("alice") == Path("/Users/alice") / ".config" / "sops" / "age" / "keys.txt"
+
+
+def test_has_hosts_sentinels_true_when_both_markers_present() -> None:
+    assert has_hosts_sentinels("# MAC2NIX:HOSTS:BEGIN\n...\n# MAC2NIX:HOSTS:END\n") is True
+
+
+def test_has_hosts_sentinels_false_when_a_marker_is_missing() -> None:
+    assert has_hosts_sentinels("# MAC2NIX:HOSTS:BEGIN\n...\n") is False
+    assert has_hosts_sentinels("not a mac2nix flake at all") is False
 
 
 # ---------------------------------------------------------------------------
