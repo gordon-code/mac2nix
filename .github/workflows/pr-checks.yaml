@@ -46,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - name: Install sops and age
         run: brew install sops age
@@ -107,7 +107,7 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       # Via Nix, not Homebrew, so these survive the Homebrew removal below —
       # add_host() needs sops/age-keygen on PATH regardless of Homebrew's state.
