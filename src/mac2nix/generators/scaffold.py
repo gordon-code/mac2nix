@@ -25,6 +25,18 @@ logger = logging.getLogger(__name__)
 _HOSTS_BEGIN = "# MAC2NIX:HOSTS:BEGIN"
 _HOSTS_END = "# MAC2NIX:HOSTS:END"
 
+
+def has_hosts_sentinels(flake_content: str) -> bool:
+    """Return whether *flake_content* contains both MAC2NIX:HOSTS sentinel markers.
+
+    Public accessor so callers outside this module (the CLI) can check
+    whether a `flake.nix` looks like a mac2nix-scaffolded framework without
+    importing this module's private `_HOSTS_BEGIN`/`_HOSTS_END` sentinel
+    constants directly -- mirrors `age_key_path()`'s "public wrapper" pattern.
+    """
+    return _HOSTS_BEGIN in flake_content and _HOSTS_END in flake_content
+
+
 _META_FILENAME = ".mac2nix-meta.json"
 _STATE_FILENAME = ".mac2nix-state.json"
 
@@ -421,7 +433,7 @@ def add_host(
         msg = f"{output_dir} is not a mac2nix-scaffolded framework — run `mac2nix init` first"
         raise ScaffoldError(msg)
     flake_content = flake_path.read_text()
-    if _HOSTS_BEGIN not in flake_content or _HOSTS_END not in flake_content:
+    if not has_hosts_sentinels(flake_content):
         msg = f"{output_dir} is not a mac2nix-scaffolded framework — run `mac2nix init` first"
         raise ScaffoldError(msg)
 
