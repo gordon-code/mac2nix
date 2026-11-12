@@ -34,6 +34,7 @@ from mac2nix.mappings.classifier import (
     classify_security_setting,
     classify_shell_setting,
     classify_system_setting,
+    classify_wallpaper,
 )
 from mac2nix.mappings.defaults_to_nix import (
     DEFAULTS_TO_NIX,
@@ -94,6 +95,7 @@ __all__ = [
     "classify_security_setting",
     "classify_shell_setting",
     "classify_system_setting",
+    "classify_wallpaper",
     "filter_ephemeral",
     "get_app_config",
     "get_font_nixpkgs",
