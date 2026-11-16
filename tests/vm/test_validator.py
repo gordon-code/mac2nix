@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -470,7 +471,7 @@ class TestValidatorCopyFlake:
 
     def test_exclude_omits_dev_only_directories(self, tmp_path: Path) -> None:
         """When exclude is non-empty, only top-level entries not in exclude are copied."""
-        for name in (".git", ".env", "data", "hack"):
+        for name in (".git", ".env", "data", "hack", ".cache"):
             (tmp_path / name).mkdir()
         (tmp_path / "flake.nix").touch()
 
@@ -499,7 +500,7 @@ class TestValidatorCopyFlake:
 
 
 class TestScanVMSourceSelection:
-    def test_default_source_runs_published_flake_without_extra_copy(self) -> None:
+    def test_default_source_runs_published_flake_without_extra_copy(self, caplog: pytest.LogCaptureFixture) -> None:
         """Default mac2nix_source runs the GitHub flake directly — regression check
         that today's `mac2nix validate` behavior (no local-source SCP) is unchanged."""
         vm = _make_vm(exec_result=(True, "", ""))
@@ -520,13 +521,19 @@ class TestScanVMSourceSelection:
             ):
                 return await v._scan_vm()
 
-        result = asyncio.run(_run())
+        with caplog.at_level(logging.WARNING, logger="mac2nix.vm.validator"):
+            result = asyncio.run(_run())
         assert result is vm_state
         # Only the `nix run` scan invocation — no mkdir/scp for a source copy.
         assert len(exec_calls) == 1
         nix_run_cmd = exec_calls[0]
         joined = nix_run_cmd[2]
         assert f"nix run {Validator._DEFAULT_MAC2NIX_SOURCE} --" in joined
+        # The unpinned-default supply-chain disclosure must surface as a
+        # visible warning, not only under verbose/debug logging.
+        assert any(
+            r.levelno == logging.WARNING and "unpinned default mac2nix source" in r.message for r in caplog.records
+        )
         assert Validator._REMOTE_SOURCE_DIR not in joined
 
     def test_local_source_triggers_scp_and_runs_from_remote_source_dir(self, tmp_path: Path) -> None:
@@ -616,7 +623,7 @@ class TestValidatorValidate:
         # We patch async_run_command and from_json separately.
         return vm
 
-    def test_success_returns_validation_result(self) -> None:
+    def test_success_returns_validation_result(self, tmp_path: Path) -> None:
         vm = _make_vm(exec_result=(True, "admin", ""))
         source = _minimal_source_state()
         vm_state = _base_state(shell=ShellConfig(shell_type="fish"))
@@ -627,7 +634,7 @@ class TestValidatorValidate:
                 patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))),
                 patch.object(SystemState, "from_json", return_value=vm_state),
             ):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert isinstance(result, ValidationResult)
@@ -648,7 +655,34 @@ class TestValidatorValidate:
         assert any("copy_flake" in e for e in result.errors)
         assert result.fidelity is None
 
-    def test_bootstrap_failure_returns_early(self) -> None:
+    def test_validate_excludes_dev_only_content_from_the_copied_flake(self, tmp_path: Path) -> None:
+        """The caller's real flake directory can contain .git (full history,
+        sometimes with secrets committed before later encryption) and .env --
+        validate() must scope the copy with _USER_FLAKE_EXCLUDE (deliberately
+        narrower than _LOCAL_SOURCE_EXCLUDE, which is scoped to mac2nix's own
+        dev-tree conventions like "data"/"hack" -- an arbitrary caller's real
+        flake could legitimately have a top-level directory with either name
+        that nix-darwin actually needs), or .git/.env is copied wholesale into
+        a VM that also runs an unpinned re-scan source with outbound network
+        access.
+        """
+        vm = _make_vm(exec_result=(True, "admin", ""))
+        source = _minimal_source_state()
+        vm_state = _base_state(shell=ShellConfig(shell_type="fish"))
+
+        async def _run() -> None:
+            v = Validator(vm)
+            with (
+                patch.object(v, "_copy_flake_to_vm", new=AsyncMock()) as mock_copy,
+                patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))),
+                patch.object(SystemState, "from_json", return_value=vm_state),
+            ):
+                await v.validate(tmp_path, source)
+                mock_copy.assert_any_call(tmp_path, exclude=Validator._USER_FLAKE_EXCLUDE)
+
+        asyncio.run(_run())
+
+    def test_bootstrap_failure_returns_early(self, tmp_path: Path) -> None:
         # mkdir succeeds, then first exec_command call in bootstrap fails
         call_count = 0
 
@@ -666,13 +700,13 @@ class TestValidatorValidate:
         async def _run() -> ValidationResult:
             v = Validator(vm)
             with patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert result.success is False
         assert any("bootstrap" in e for e in result.errors)
 
-    def test_rebuild_failure_returns_early(self) -> None:
+    def test_rebuild_failure_returns_early(self, tmp_path: Path) -> None:
         # Bootstrap succeeds (Nix reports already installed); rebuild switch fails.
         # Keyed off command content, not call position, so it's insensitive to how
         # many exec_command calls bootstrap itself makes.
@@ -691,13 +725,13 @@ class TestValidatorValidate:
         async def _run() -> ValidationResult:
             v = Validator(vm)
             with patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert result.success is False
         assert any("nix-darwin" in e or "darwin-rebuild" in e for e in result.errors)
 
-    def test_scan_failure_returns_early(self) -> None:
+    def test_scan_failure_returns_early(self, tmp_path: Path) -> None:
         # All VM exec_commands succeed, but mac2nix scan fails
         call_count = 0
 
@@ -717,13 +751,13 @@ class TestValidatorValidate:
         async def _run() -> ValidationResult:
             v = Validator(vm)
             with patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert result.success is False
         assert any("scan" in e for e in result.errors)
 
-    def test_scan_parse_failure_returns_error(self) -> None:
+    def test_scan_parse_failure_returns_error(self, tmp_path: Path) -> None:
         """If SCP back succeeds but JSON parse fails, validate returns failure."""
         vm = _make_vm(exec_result=(True, "admin", ""))
         source = _minimal_source_state()
@@ -734,13 +768,13 @@ class TestValidatorValidate:
                 patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))),
                 patch.object(SystemState, "from_json", side_effect=ValueError("bad json")),
             ):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert result.success is False
         assert any("scan" in e for e in result.errors)
 
-    def test_success_build_output_captured(self) -> None:
+    def test_success_build_output_captured(self, tmp_path: Path) -> None:
         vm = _make_vm()
         vm.exec_command = AsyncMock(return_value=(True, "build output text", ""))
         source = _minimal_source_state()
@@ -752,14 +786,14 @@ class TestValidatorValidate:
                 patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))),
                 patch.object(SystemState, "from_json", return_value=vm_state),
             ):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert result.success is True
         # build_output is the combined stdout+stderr from darwin-rebuild
         assert isinstance(result.build_output, str)
 
-    def test_success_fidelity_report_populated(self) -> None:
+    def test_success_fidelity_report_populated(self, tmp_path: Path) -> None:
         vm = _make_vm(exec_result=(True, "admin", ""))
         source = _base_state(shell=ShellConfig(shell_type="fish"))
         vm_state = _base_state(shell=ShellConfig(shell_type="fish"))
@@ -770,14 +804,14 @@ class TestValidatorValidate:
                 patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))),
                 patch.object(SystemState, "from_json", return_value=vm_state),
             ):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert result.fidelity is not None
         assert isinstance(result.fidelity, FidelityReport)
         assert result.fidelity.overall_score == 1.0
 
-    def test_fidelity_reflects_vm_state_difference(self) -> None:
+    def test_fidelity_reflects_vm_state_difference(self, tmp_path: Path) -> None:
         """Fidelity < 1.0 when VM state differs from source."""
         vm = _make_vm(exec_result=(True, "admin", ""))
         source = _base_state(shell=ShellConfig(shell_type="fish"))
@@ -789,14 +823,14 @@ class TestValidatorValidate:
                 patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))),
                 patch.object(SystemState, "from_json", return_value=vm_state),
             ):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert result.success is True
         assert result.fidelity is not None
         assert result.fidelity.overall_score < 1.0
 
-    def test_scp_result_back_no_ip_returns_scan_error(self) -> None:
+    def test_scp_result_back_no_ip_returns_scan_error(self, tmp_path: Path) -> None:
         """If VM has no IP when SCPing result back, scan fails gracefully."""
         get_ip_calls = 0
         vm = _make_vm()
@@ -814,7 +848,7 @@ class TestValidatorValidate:
         async def _run() -> ValidationResult:
             v = Validator(vm)
             with patch("mac2nix.vm.validator.async_run_command", new=AsyncMock(return_value=(0, "", ""))):
-                return await v.validate(Path("/tmp/flake"), source)
+                return await v.validate(tmp_path, source)
 
         result = asyncio.run(_run())
         assert result.success is False

@@ -21,7 +21,8 @@ from rich.table import Table
 from rich.text import Text
 
 from mac2nix import onepassword
-from mac2nix.generators.scaffold import add_host, age_key_path, init_framework
+from mac2nix.generators import generate_all
+from mac2nix.generators.scaffold import add_host, age_key_path, has_hosts_sentinels, init_framework
 from mac2nix.models.system_state import SystemState
 from mac2nix.orchestrator import run_scan
 from mac2nix.scan_report import ScannerOutcome, ScannerStatus, capture_scanner_logs, get_remediation_hint
@@ -384,10 +385,99 @@ def add_host_cmd(output_dir: Path, hostname: str, username: str, system: str, op
     )
 
 
+# Extend this tuple (never restructure) as each domain generator lands --
+# Task 7 (shell) adds "shell", then Task 6 (homebrew) adds "homebrew".
+_ALLOWED_DOMAINS = ("preferences",)
+
+
+def _check_scaffolded_framework(output_dir: Path) -> None:
+    """Matches add_host()'s own scaffolded-framework check in scaffold.py
+    (shared `has_hosts_sentinels()` predicate) -- kept as a second,
+    independent check (not a shared function) since this one must raise
+    click.ClickException while add_host() raises ScaffoldError, but reusing
+    the shared predicate avoids the two checks silently drifting apart.
+    """
+    flake_path = output_dir / "flake.nix"
+    try:
+        flake_content = flake_path.read_text() if flake_path.is_file() else ""
+    except OSError as exc:
+        raise click.ClickException(f"Failed to read {flake_path}: {exc}") from exc
+    if not has_hosts_sentinels(flake_content):
+        raise click.ClickException(f"{output_dir} is not a mac2nix-scaffolded framework — run `mac2nix init` first")
+
+
+def _check_host_registered(output_dir: Path, hostname: str) -> None:
+    host_dir = output_dir / "hosts" / "darwin" / hostname
+    try:
+        host_registered = host_dir.exists()
+    except OSError as exc:
+        raise click.ClickException(f"Failed to check {host_dir}: {exc}") from exc
+    if not host_registered:
+        msg = f"host {hostname!r} is not registered under {output_dir} — run `mac2nix add-host` first"
+        raise click.ClickException(msg)
+
+
 @main.command()
-def generate() -> None:
-    """Generate nix-darwin configuration from a scan snapshot."""
-    click.echo("generate: not yet implemented")
+@click.argument("output_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--hostname",
+    required=True,
+    callback=_validate_hostname,
+    help="Host to populate (must already be registered via add-host).",
+)
+@click.option(
+    "--scan-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Source SystemState JSON produced by 'mac2nix scan'. Omit to scan the current machine inline.",
+)
+@click.option(
+    "--domains",
+    default="preferences",
+    show_default=True,
+    help=f"Comma-separated domains to generate. Allowed: {', '.join(_ALLOWED_DOMAINS)}.",
+)
+def generate(output_dir: Path, hostname: str, scan_file: Path | None, domains: str) -> None:
+    """Generate nix-darwin configuration for one host from a scan.
+
+    Never invokes `nix flake lock`, `nix build`, `darwin-rebuild`, or `git`
+    -- it only writes files and (for an inline scan) runs the existing
+    read-only scanners.
+    """
+    _check_scaffolded_framework(output_dir)
+
+    requested_domains = {token.strip() for token in domains.split(",") if token.strip()}
+    unknown = requested_domains - set(_ALLOWED_DOMAINS)
+    if unknown:
+        msg = f"unknown domain(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(_ALLOWED_DOMAINS)}"
+        raise click.BadParameter(msg, param_hint="--domains")
+
+    _check_host_registered(output_dir, hostname)
+
+    if scan_file is not None:
+        try:
+            system_state = SystemState.from_json(scan_file)
+        except Exception as exc:
+            raise click.ClickException(f"Failed to load scan file: {exc}") from exc
+    else:
+        try:
+            system_state = asyncio.run(run_scan())
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    try:
+        result = generate_all(system_state, output_dir, hostname, requested_domains)
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if result.ran:
+        click.echo(f"Generated: {', '.join(sorted(result.ran))}")
+    for domain, reason in sorted(result.skipped.items()):
+        click.echo(f"Skipped {domain}: {reason}")
+    if result.unrecognized:
+        click.echo(f"Unrecognized (not generated): {', '.join(sorted(result.unrecognized))}")
 
 
 @main.command()
