@@ -55,7 +55,7 @@ class TestConstructor:
         assert mgr._vm_process is None
 
     def test_custom_credentials(self) -> None:
-        mgr = TartVMManager("base", vm_user="user1", vm_password="s3cr3t")
+        mgr = TartVMManager("base", vm_user="user1", vm_password="s3cr3t")  # betterleaks:allow
         assert mgr._vm_user == "user1"
         assert mgr._vm_password == "s3cr3t"
 
